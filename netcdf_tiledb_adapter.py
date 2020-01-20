@@ -73,13 +73,13 @@ class NCtoTileDB(object):
         or unclassified (ignored).
         
         """
+        # Classify unlimited dimensions.
+        self.unlimited_dim_coords = [name for name in self._ncds_dims_names
+                                     if self._ncds_dims[name].isunlimited()]
+        
         classified_vars = []
         for var_name in self._ncds_vars_names:
             variable = self._ncds_vars[var_name]
-            
-            # Check if this variable describes an unlimited dim.
-#             if len(variable.shape) == 0:
-#                 self.unlimited_dim_coords.append(var_name)
                 
             # Check if this is the data variable.
             if self._check_data_var(variable):
@@ -89,6 +89,16 @@ class NCtoTileDB(object):
                 self.chunks = variable.chunking()
                 # Set shape.
                 self.shape = variable.shape
+                
+            # Check if it's a grid mapping variable.
+            elif hasattr(variable, 'grid_mapping_name'):
+                self.grid_mapping[var_name] = variable
+                classified_vars.append(var_name)
+                
+            # Check if it's a cell measure variable.
+            elif hasattr(variable, 'cell_measures'):
+                self.cell_measures[var_name] = variable
+                classified_vars.append(var_name)
             
             # Check if it's a dimension coordinate.
             elif var_name in self._ncds_dims_names:
@@ -105,16 +115,6 @@ class NCtoTileDB(object):
                 self.bounds[var_name] = variable
                 classified_vars.append(var_name)
                 
-            # Check if it's a grid mapping variable.
-            elif hasattr(variable, 'grid_mapping_name'):
-                self.grid_mapping[var_name] = variable
-                classified_vars.append(var_name)
-                
-            # Check if it's a cell measure variable.
-            elif hasattr(variable, 'cell_measures'):
-                self.cell_measures[var_name] = variable
-                classified_vars.append(var_name)
-                
             # TODO: check if it's a cell method variable
 #             elif hasattr(variable, 'cell_measures'):
 #                 pass
@@ -124,13 +124,13 @@ class NCtoTileDB(object):
         
         # See what we can do about the unclassified vars.
         for u_var in unclassified_vars:
-            variable = self._ncds_vars[var_name]
+            variable = self._ncds_vars[u_var]
             
             # Check if it's an auxiliary coordinate.
             for dim_var in self.dim_coords.values():
                 if variable.shape == dim_var.shape:
                     self.aux_coords[u_var] = variable
-                    classified_vars.append(var_name)
+                    classified_vars.append(u_var)
                     
             # Handle multidimensional coords too.
             if len(variable.shape) > 1:
@@ -165,15 +165,13 @@ class NCtoTileDB(object):
         if len(np.unique(self.shape)) != len(self.shape):
             # Handle repeated dimension lengths, e.g. shape=(100, 100, 100)
             order_specifier = self._ncds_dims_names
-            all_coords = self.dim_coords.keys()
             dim_mapping = {order_specifier.index(dim_name): dim_name
-                           for dim_name in all_coords}
+                           for dim_name in self.dim_coords.keys()}
         else:
             # All dimension lengths unique.
             order_specifier = self.shape
-            all_coords = [*self.dim_coords.keys()] + [*self.aux_coords.keys()]
             dim_mapping = {order_specifier.index(self._get_coord(dim_name).shape[0]): dim_name
-                           for dim_name in all_coords}
+                           for dim_name in self.dim_coords.keys()}
             
         # dim_mapping ---> {index: dim_name}
         # coord_mapping -> {dim_name: index}
@@ -186,19 +184,16 @@ class NCtoTileDB(object):
         
         # TODO: work out nD coords.
         dim_coord_len, = dim_coord.shape
+        
+        # Set the tdb dimension dtype to `int64` regardless of input.
+        # All tdb dims in a domain must have exactly the same dtype.
+        dim_dtype = np.int64
+        
         # Sort out the domain, based on whether the dim is unlimited.
         if dim_name in self.unlimited_dim_coords:
-            domain_max = np.iinfo(dtype).max - dim_coord_len
+            domain_max = np.iinfo(dim_dtype).max - dim_coord_len
         else:
             domain_max = dim_coord_len
-        
-        # Set dtype, which must always be int for a dense tdb array.
-        # Use incoming dtype if already int, otherwise maintain the itemsize only.        
-        if np.issubdtype(dtype, np.integer):
-            dim_dtype = dtype
-        else:
-            itemsize = np.dtype(dtype).itemsize
-            dim_dtype = np.dtype(f'i{itemsize}')
         
         return tiledb.Dim(name=dim_name,
                           domain=(0, domain_max),
@@ -216,7 +211,7 @@ class NCtoTileDB(object):
             dim_index = coord_mapping[dim_name]
             tdb_dim = self._create_tdb_dim(dim_name, self.chunks[dim_index])
             array_dims.append(tdb_dim)
-                
+        
         # Create tdb array domain.
         domain = tiledb.Domain(*array_dims)
         
