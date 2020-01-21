@@ -10,12 +10,12 @@ class NCtoTileDB(object):
     Provides an adapter class to convert a NetCDF4 dataset into a TileDB array.
     
     Outstanding questions:
-      * how do we represent unlimited dimensions? (Done?)
+      * how do we represent unlimited dimensions? (Done)
       * how do we represent nD coordinates? (Probably OK?)
       * how do we represent scalar coordinates? (Probably OK?)
-      * how do we represent auxiliary dimension-describing coordinates in tiledb?
-      * how do we represent cell methods?
-      * how do we represent ancilliary variables and more esoteric metadata?
+      * how do we represent auxiliary dimension-describing coordinates in tiledb? (OK?)
+      * how do we represent cell methods? (not done)
+      * how do we represent ancilliary variables and more esoteric metadata? (not done)
 
     """
     data_var = {}
@@ -199,7 +199,16 @@ class NCtoTileDB(object):
                           domain=(0, domain_max),
                           tile=chunks,
                           dtype=dim_dtype)
-        
+
+    def _create_tdb_attrs(self):
+        # Create array attribute.
+        tdb_attrs = []
+        for phenom_name in self.data_var.keys():
+            data_var = self.data_var[phenom_name]
+            phenom = tiledb.Attr(name=phenom_name, dtype=data_var.dtype)
+            tdb_attrs.append(phenom)
+        return tdb_attrs
+    
     def create_tiledb_array(self):
         dim_mapping, coord_mapping = self._coords_dims_mapping()
         
@@ -215,28 +224,27 @@ class NCtoTileDB(object):
         # Create tdb array domain.
         domain = tiledb.Domain(*array_dims)
         
-        # Create array attribute.
-        (phenom_name, data_var), = self.data_var.items()
-        phenom = tiledb.Attr(name=phenom_name, dtype=data_var.dtype)
-        
+        # Get tdb attributes.
+        attrs = self._create_tdb_attrs()
+   
         # Create an empty array.
-        schema = tiledb.ArraySchema(domain=domain, sparse=False, attrs=[phenom])
+        schema = tiledb.ArraySchema(domain=domain, sparse=False, attrs=attrs)
         tiledb.Array.create(self.array_filename, schema)
         
-    def _array_indices(self, data_var_shape, start_index=0):
+    def _array_indices(self, start_index=0):
         """Set the array indices to write the array data into."""
         array_indices = []
-        for dim in data_var_shape:
+        for dim in self.shape:
             array_indices.append(slice(start_index, dim))
         return tuple(array_indices)
         
     def populate_array(self, start_index=0): 
         with tiledb.open(self.array_filename, 'w') as A:
             # Add data array.
-            data_var, = self.data_var.values()
-            write_indices = self._array_indices(data_var.shape, start_index)
-            A[write_indices] = data_var[...]
-            
+            write_indices = self._array_indices(start_index)
+            attribute_mapping = {name: var[...] for name, var in self.data_var.items()}
+            A[write_indices] = attribute_mapping
+
             # Add metadata.
             for k, v in self._ncds_attrs.items():
                 A.meta[k] = v
