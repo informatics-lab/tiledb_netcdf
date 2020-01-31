@@ -113,6 +113,13 @@ class TDBWriter(object):
         # Create an empty array.
         schema = tiledb.ArraySchema(domain=domain, sparse=False, attrs=attrs)
         tiledb.Array.create(self.array_filename, schema)
+
+    def create_arrays(self):
+        """
+        We need to create one TDB array per domain in the data model. 
+        
+        """
+        pass
         
     def _array_indices(self, start_index=0):
         """Set the array indices to write the array data into."""
@@ -142,18 +149,19 @@ class ZarrWriter(object):
       * Labelled dimensions / support for coords.
     
     """
-    def __init__(self, data_model, filepath, array_name=None):
+    def __init__(self, data_model, filepath, group_name=None):
         self.data_model = data_model
         self.filepath = filepath
-        self._array_name = array_name
+        self._group_name = group_name
         
-        if self._array_name is None:
-            self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
+        if self._group_name is None:
+            self.group_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
         else:
-            self.array_name = self._array_name
-        self.array_filename = f'{os.path.join(os.path.abspath("."), self.filepath, self.array_name)}.zarr'
+            self.group_name = self.group_name
+        self.array_filename = f'{os.path.join(os.path.abspath("."), self.filepath, self.group_name)}.zarr'
         print(self.array_filename)
         
+        self.group = None
         self.zarray = None
     
     def create_array(self):
@@ -161,7 +169,24 @@ class ZarrWriter(object):
                                 shape=self.data_model.shape,
                                 mode='a',
                                 chunks=self.data_model.chunks)
-    
+
+    def create_group(self):
+        store = zarr.DirectoryStore(self.array_filename)
+        self.group = zarr.group(store=store)
+        
+        for var_name in self.data_model.data_var_names:
+            nc_data_var = self.data_model._ncds_vars[var_name]
+            data_array = self.group.create_dataset(var_name,
+                                                   shape=nc_data_var.shape,
+                                                   chunks=nc_data_var.chunking,
+                                                   dtype=nc_data_var.dtype)
+            data_array[:] = nc_data_var[...]
+            
+            # Set array attributes from ncattrs.
+            for ncattr in nc_data_var.ncattrs():
+                data_array.attrs[ncattr] = nc_data_var.getncattr(ncattr)
+        
+        
     def populate_array(self):
         self.zarray[:] = list(self.data_model.data_var.values())[0][...]
         
