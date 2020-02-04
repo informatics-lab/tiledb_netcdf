@@ -18,7 +18,7 @@ class NCDataModel(object):
     unlimited_dim_coords = []
     
     domains = []
-    var_name_domain_mapping = None
+    domain_varname_mapping = None
     shape = None
     chunks = None
 
@@ -37,23 +37,11 @@ class NCDataModel(object):
         self._ncds_attrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
         
         self._classified = False
-        
-        self._shape = None
-        
-    @property
-    def shape(self):
-        if self._shape is None:
-            self.set_shape()
-        return self._shape
-    
-    @shape.setter
-    def shape(self, value):
-        self._shape = value
 
-    def set_shape(self):
-        shape_lens = [len(self._ncds_vars[var_name].shape) for var_name in self.data_var_names]
-        max_shape_len = max(shape_lens)
-        biggest_data_vars = self.data_var_names[np.nonzero(np.array(shape_lens) == max_shape_len)]
+#     def set_shape(self):
+#         shape_lens = [len(self._ncds_vars[var_name].shape) for var_name in self.data_var_names]
+#         max_shape_len = max(shape_lens)
+#         biggest_data_vars = self.data_var_names[np.nonzero(np.array(shape_lens) == max_shape_len)]
         
     def get_data_var(self, variable_name):
         """Return useful metadata from a data variable."""
@@ -132,6 +120,34 @@ class NCDataModel(object):
         # We've now classified this NC file.
         self._classified = True
 
+    def get_chunks(self, data_var_name):
+        """
+        Get chunks for a named data variable `data_var_name`.
+        
+        Chunking can be tricky as 'contiguous' is a valid NetCDF
+        chunking strategy (i.e. there's only one chunk and the data is
+        contiguous on disk). In this case we want the chunking to match
+        the shape, which is an equivalent statement.
+        One heuristic we apply is that for ndim > 3 the chunking of all
+        leading dimensions is [1,] to avoid very large chunks.
+        
+        """
+        data_var = self._ncds_vars[data_var_name]
+        chunks = data_var.chunking()
+        if chunks == 'contiguous':
+            shape = data_var.shape
+            data_ndim = len(shape)
+            max_contiguous_dims = 3
+            overflow_dims = data_ndim - max_contiguous_dims
+            if data_ndim > max_contiguous_dims:
+                # More than 3D so chunk along outer (leading) dimension
+                # to keep chunk sizes down.
+                leading_chunksizes = [1] * overflow_dims
+                chunks = tuple(leading_chunksizes + list(shape[overflow_dims:]))
+            else:
+                chunks = shape
+        return chunks
+        
     def get_domains(self):
         """
         Determine the unique set of domains described in all the variables in the dataset.
@@ -146,15 +162,15 @@ class NCDataModel(object):
         ndims = np.array([len(self._ncds_vars[var_name].shape) for var_name in self.data_var_names])
         max_ndim = max(ndims)
         # Get the variables that describe the most enclosing domains (super domains).
-        super_domain_vars = np.array(coords)[ndims == max_ndim]
+        super_domain_vars = np.array(self.data_var_names)[ndims == max_ndim]
         domain_dims = [self._ncds_vars[var_name].dimensions for var_name in super_domain_vars]
         # Get the unique super domains.
         super_domains = list(set(domain_dims))
         # Get the variables that haven't been checked for domain inclusion.
-        undomained_vars = set(coords) - set(super_domains)
+        undomained_vars = set(self.data_var_names) - set(super_domains)
 
         # Check for super domains with fewer than the maximum ndim.
-        for var_name in coords:
+        for var_name in self.data_var_names:
             dims = self._ncds_vars[var_name].dimensions
             partial_coverage = [set(dims) - set(domain) for domain in super_domains]
             if all(partial_coverage):
@@ -178,7 +194,8 @@ class NCDataModel(object):
                              for var_name in self.data_var_names}
 
         # Filling this is our target.
-        name_domain_mapping = {}
+        name_domain_mapping = {k: [] for k in self.domains}
+        # TODO: use an itertools product instead.
         for var_name, dims in name_dims_mapping.items():
             valid_domain = None
             for domain in self.domains:
@@ -187,10 +204,10 @@ class NCDataModel(object):
                     # ... this is a valid super domain.
                     valid_domain = domain
                     break
-            name_domain_mapping[var_name] = valid_domain
-        self.var_name_domain_mapping = name_domain_mapping
+            name_domain_mapping[valid_domain].append(var_name)
+        self.domain_varname_mapping = name_domain_mapping
         
-    def set_extra_metadata(self):
+    def get_metadata(self):
         """
         Set extra metadata now that we've classified the dataset variables, notably:
         
@@ -208,7 +225,8 @@ class NCDataModel(object):
             # Only one data var so we can set domain, chunks and shape from it.
             data_var = self._ncds_vars[self.data_var_names[0]]
             self.domains.append(data_var.dimensions)
-            self.chunks = data_var.chunking
+            self.domain_varname_mapping = {data_var.dimensions: [self.data_var_names[0]]}
+            self.chunks = self.get_chunks(self.data_var_names[0])
             self.shape = data_var.shape
         elif n_data_vars > 1:
             # Multiple data vars means we need to set domains and variable-domain mapping.
