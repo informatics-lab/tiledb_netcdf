@@ -19,6 +19,7 @@ class NCDataModel(object):
     
     domains = []
     domain_varname_mapping = None
+    varname_domain_mapping = None
     shape = None
     chunks = None
 
@@ -31,7 +32,7 @@ class NCDataModel(object):
         self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
         
         self._ncds_dims = self._ncds.dimensions
-        self._ncds_dims_names = list(self._ncds_dims.keys())      
+        self._ncds_dims_names = list(self._ncds_dims.keys())
         self._ncds_vars = self._ncds.variables
         self._ncds_vars_names = list(self._ncds.variables.keys())
         self._ncds_attrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
@@ -235,6 +236,9 @@ class NCDataModel(object):
         else:
             # No data var means trouble.
             raise ValueError(f'Expected to find at least one data var, but found {n_data_vars}.')
+            
+        # Also create the inverse mapping of var_name --> domain.
+        self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
 
 
 class OldNCDM(object):
