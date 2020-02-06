@@ -5,7 +5,44 @@ import tiledb
 import zarr
 
 
-class TDBWriter(object):
+class Writer(object):
+    """
+    An abstract base for specific writers to write the contents
+    of a NetCDF file to a different format.
+
+    """
+    def __init__(self, data_model, array_filepath,
+                 array_name=None, unlimited_dims=None):
+        self.data_model = data_model
+        self.array_filepath = array_filepath
+        self.unlimited_dims = unlimited_dims
+
+        self._array_name = array_name
+        if self._array_name is None:
+            self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
+        else:
+            self.array_name = self._array_name
+
+    def _append_checker(self, other_data_model, var_name, append_dim):
+        """Checks to see if an append operation can go ahead."""
+        # Sanity checks: is the var name in both self, other, and the tiledb?
+        assert var_name in self.data_model.data_var_names
+        assert var_name in other_data_model.data_var_names
+
+        # And is the append dimension valid?
+        assert append_dim in self.data_model.variables[var_name].dimensions
+        assert append_dim in other_data_model.variables[var_name].dimensions
+        # And are the two data vars on the same domain?
+        assert self_data_var.dimensions == other_data_var.dimensions
+
+    def _append_dimension(self, append_dim):
+        """Determine the index of the dimension for the append operation."""
+        if not isinstance(append_dim, int):
+            append_dim = self.data_model.variables[data_var].dimensions.index(append_dim)
+        return append_dim
+
+
+class TDBWriter(Writer):
     """
     Provides a class to write Python objects loaded from NetCDF to TileDB.
 
@@ -13,18 +50,9 @@ class TDBWriter(object):
     Filepath: the filepath to save the tiledb array at.
 
     """
-    def __init__(self, data_model, tiledb_filepath,
-                 tiledb_array_name=None, unlimited_dims=None):
-        self.data_model = data_model
-        self.tiledb_filepath = tiledb_filepath
-        self.unlimited_dims = unlimited_dims
-
-        self._tiledb_array_name = tiledb_array_name
-
-        if self._tiledb_array_name is None:
-            self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
-        else:
-            self.array_name = self._tiledb_array_name
+    def __init__(self, data_model, array_filepath,
+                 array_name=None, unlimited_dims=None):
+        super().__init__(data_model, filepath, array_name, unlimited_dims)
 
     def _public_domain_name(self, domain):
         domain_index = self.data_model.domains.index(domain)
@@ -168,16 +196,12 @@ class TDBWriter(object):
             appended data
 
         """
-        # Sanity checks: is the var name in both self, other, and the tiledb?
-        assert var_name in self.data_model.data_var_names
-        assert var_name in other_data_model.data_var_names
+        # Check if the append can go ahead.
+        self._append_checker(other_data_model, var_name, append_dim)
 
-        # And is the append dimension valid?
+        # Get data vars from self and other.
         self_data_var = self.data_model.variables[var_name]
         other_data_var = other_data_model.variables[var_name]
-        assert append_dim in self_data_var.dimensions
-        assert append_dim in other_data_var.dimensions
-        assert self_data_var.dimensions == other_data_var.dimensions
 
         # Get domain for var_name and tiledb array path.
         domain = self.data_model.varname_domain_mapping[var_name]
@@ -185,8 +209,7 @@ class TDBWriter(object):
         domain_path = os.path.join(self.tiledb_filepath, self.array_name, domain_name)
 
         # Get the index for the append dimension.
-        if not isinstance(append_dim, int):
-            append_dim = self_data_var.dimensions.index(append_dim)
+        append_dim = self._append_dimension(append_dim)
 
         # Get the offset along the append dimension, assuming that self and other are
         # contiguous along this dimension.
@@ -199,18 +222,13 @@ class TDBWriter(object):
                             start_index=offsets, write_meta=False)
 
 
-class ZarrWriter(object):
+class ZarrWriter(Writer):
     """Provides a class to write Python objects loaded from NetCDF to zarr."""
-    def __init__(self, data_model, filepath, group_name=None):
-        self.data_model = data_model
-        self.filepath = filepath
-        self._group_name = group_name
+    def __init__(self, data_model, array_filepath, array_name=None):
+        super().__init__(data_model, array_filepath, array_name, unlimited_dims=None)
 
-        if self._group_name is None:
-            self.group_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
-        else:
-            self.group_name = self.group_name
-        self.array_filename = f'{os.path.join(os.path.abspath("."), self.filepath, self.group_name)}.zarr'
+        filename = os.path.join(os.path.abspath("."), self.array_filepath, self.array_name)
+        self.array_filename = f'{filename}.zarr'
         print(self.array_filename)
 
         self.group = None
@@ -226,20 +244,20 @@ class ZarrWriter(object):
         """
         # Write domain variables and dimensions into group.
         for var_name in var_names:
-            nc_data_var = self.data_model.variables[var_name]
+            data_var = self.data_model.variables[var_name]
             chunks = self.data_model.get_chunks(var_name)
             data_array = self.group.create_dataset(var_name,
-                                                     shape=nc_data_var.shape,
-                                                     chunks=chunks,
-                                                     dtype=nc_data_var.dtype)
-            data_array[:] = nc_data_var[...]
+                                                   shape=data_var.shape,
+                                                   chunks=chunks,
+                                                   dtype=data_var.dtype)
+            data_array[:] = data_var[...]
 
             # Set array attributes from ncattrs.
-            for ncattr in nc_data_var.ncattrs():
-                data_array.attrs[ncattr] = nc_data_var.getncattr(ncattr)
+            for ncattr in data_var.ncattrs():
+                data_array.attrs[ncattr] = data_var.getncattr(ncattr)
 
             # Set attribute to specify var's dimensions.
-            data_array.attrs['_ARRAY_DIMENSIONS'] = nc_data_var.dimensions
+            data_array.attrs['_ARRAY_DIMENSIONS'] = data_var.dimensions
 
     def create_zarr(self):
         """
@@ -268,7 +286,7 @@ class ZarrWriter(object):
             self.create_variable_datasets(domain_vars)
 
         # Write zarr datasets for dimension variables.
-        keys = [k for k in self.data_model.domain_varname_mapping]
+        keys = list(self.data_model.domain_varname_mapping.keys())
         unique_flat_keys = set([k for domain in keys for k in domain])
         self.create_variable_datasets(unique_flat_keys)
 
@@ -286,18 +304,12 @@ class ZarrWriter(object):
         Note: append axis is limited to a single axis.
 
         """
-        # Check names line up.
-        if group_name is not None:
-            assert group_name in self.data_model.data_var_names
-        else:
-            assert self.data_model.data_var_names == other_data_model.data_var_names
+        # Check if the append can go ahead.
+        self._append_checker(other_data_model, var_name, append_dim)
 
-        # Work out the append axis.
+        # Work out the index of the append dimension.
+        append_dim = self._append_dimension(append_dim)
 
         # Run the append.
-        group_names = other_data_model.data_var_names if group_name is None else [group_name]
-        for group_name in group_names:
-            self_array = getattr(self.group, group_name)
-            other_var = other_data_model.variables[group_name]
-            axis = 0
-            self_array.append(other_var[...], axis=axis)
+        other_data_var = other_data_model.variables[var_name]
+        getattr(self.group, var_name).append(other_var[...], axis=append_dim)
