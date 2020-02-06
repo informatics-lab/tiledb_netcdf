@@ -31,22 +31,22 @@ class NCDataModel(object):
         self.netcdf_filename = netcdf_filename
         self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
 
-        self._ncds_dims = self._ncds.dimensions
-        self._ncds_dims_names = list(self._ncds_dims.keys())
-        self._ncds_vars = self._ncds.variables
-        self._ncds_vars_names = list(self._ncds.variables.keys())
-        self._ncds_attrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
+        self.dimensions = self._ncds.dimensions
+        self.dimension_names = list(self.dimensions.keys())
+        self.variables = self._ncds.variables
+        self.variable_names = list(self.variables.keys())
+        self.ncattrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
 
         self._classified = False
 
     def get_data_var(self, variable_name):
         """Return useful metadata from a data variable."""
-        variable = self._ncds_vars[variable_name]
+        variable = self.variables[variable_name]
         return self.DataVar(**{field: getattr(variable, field) for field in self.DataVar})
 
     def get_coordinate_var(self, variable_name):
         """Return useful metadata from a coordinate variable."""
-        variable = self._ncds_vars[variable_name]
+        variable = self.variables[variable_name]
         return self.CoordVar(**{field: getattr(variable, field) for field in self.CoordVar})
 
     def classify_variables(self):
@@ -65,11 +65,11 @@ class NCDataModel(object):
 
         """
         # Classify unlimited dimensions.
-        self.unlimited_dim_coords = [name for name in self._ncds_dims_names
-                                     if self._ncds_dims[name].isunlimited()]
+        self.unlimited_dim_coords = [name for name in self.dimension_names
+                                     if self.dimensions[name].isunlimited()]
 
         classified_vars = []
-        for variable_name, variable in self._ncds_vars.items():
+        for variable_name, variable in self.variables.items():
             # Check if this variable is a grid mapping variable.
             if hasattr(variable, 'grid_mapping_name'):
                 self.grid_mapping.append(variable_name)
@@ -82,7 +82,7 @@ class NCDataModel(object):
 
             # Check if this variable is a coordinate - dimension or aux.
             elif hasattr(variable, 'dimensions'):
-                if variable_name in self._ncds_dims_names:
+                if variable_name in self.dimension_names:
                     # This is a dimension coordinate.
                     self.dim_coord_names.append(variable_name)
                 elif not len(variable.dimensions):
@@ -107,7 +107,7 @@ class NCDataModel(object):
 #                 pass
 
         # What have we still missed?
-        unclassified_vars = list(set(self._ncds_vars_names) - set(classified_vars))
+        unclassified_vars = list(set(self.variable_names) - set(classified_vars))
 
         if len(unclassified_vars):
             # We're not trying again, so just print them.
@@ -128,7 +128,7 @@ class NCDataModel(object):
         leading dimensions is [1,] to avoid very large chunks.
 
         """
-        data_var = self._ncds_vars[data_var_name]
+        data_var = self.variables[data_var_name]
         chunks = data_var.chunking()
         if chunks == 'contiguous':
             shape = data_var.shape
@@ -155,11 +155,11 @@ class NCDataModel(object):
 
         """
         # Work out the shapes of each variable. The most enclosing domains will have the highest ndim.
-        ndims = np.array([len(self._ncds_vars[var_name].shape) for var_name in self.data_var_names])
+        ndims = np.array([len(self.variables[var_name].shape) for var_name in self.data_var_names])
         max_ndim = max(ndims)
         # Get the variables that describe the most enclosing domains (super domains).
         super_domain_vars = np.array(self.data_var_names)[ndims == max_ndim]
-        domain_dims = [self._ncds_vars[var_name].dimensions for var_name in super_domain_vars]
+        domain_dims = [self.variables[var_name].dimensions for var_name in super_domain_vars]
         # Get the unique super domains.
         super_domains = list(set(domain_dims))
         # Get the variables that haven't been checked for domain inclusion.
@@ -167,7 +167,7 @@ class NCDataModel(object):
 
         # Check for super domains with fewer than the maximum ndim.
         for var_name in self.data_var_names:
-            dims = self._ncds_vars[var_name].dimensions
+            dims = self.variables[var_name].dimensions
             partial_coverage = [set(dims) - set(domain) for domain in super_domains]
             if all(partial_coverage):
                 # This particular domain isn't fully represented by any existing super-domain,
@@ -186,7 +186,7 @@ class NCDataModel(object):
 
         """
         # Build a dictionary mapping var_name to covered dimensions for undomained variables.
-        name_dims_mapping = {var_name: self._ncds_vars[var_name].dimensions
+        name_dims_mapping = {var_name: self.variables[var_name].dimensions
                              for var_name in self.data_var_names}
 
         # Filling this is our target.
@@ -219,7 +219,7 @@ class NCDataModel(object):
         n_data_vars = len(self.data_var_names)
         if n_data_vars == 1:
             # Only one data var so we can set domain, chunks and shape from it.
-            data_var = self._ncds_vars[self.data_var_names[0]]
+            data_var = self.variables[self.data_var_names[0]]
             self.domains.append(data_var.dimensions)
             self.domain_varname_mapping = {data_var.dimensions: [self.data_var_names[0]]}
             self.chunks = self.get_chunks(self.data_var_names[0])

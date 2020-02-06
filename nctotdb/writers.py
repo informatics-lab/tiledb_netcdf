@@ -42,7 +42,7 @@ class TDBWriter(object):
             pass
 
     def _create_tdb_dim(self, dim_name):
-        dim_coord = self.data_model._ncds_vars[dim_name]
+        dim_coord = self.data_model.variables[dim_name]
         chunks = self.data_model.get_chunks(dim_name)
 
         # TODO: work out nD coords (although a DimCoord will never be nD).
@@ -70,7 +70,7 @@ class TDBWriter(object):
         # Create array attribute.
         tdb_attrs = []
         for phenom_name in data_vars:
-            data_var = self.data_model._ncds_vars[phenom_name]
+            data_var = self.data_model.variables[phenom_name]
             phenom = tiledb.Attr(name=phenom_name, dtype=data_var.dtype)
             tdb_attrs.append(phenom)
         return tdb_attrs
@@ -80,7 +80,7 @@ class TDBWriter(object):
 
         for var_name in domain_vars:
             # Set dims for the enclosing domain.
-            data_var = self.data_model._ncds_vars[var_name]
+            data_var = self.data_model.variables[var_name]
             data_var_dims = data_var.dimensions
             array_dims = [self._create_tdb_dim(dim_name) for dim_name in data_var_dims]
             tdb_domain = tiledb.Domain(*array_dims)
@@ -126,7 +126,7 @@ class TDBWriter(object):
     def populate_domain_arrays(self, domain_vars, group_dirname):
         """Populate all arrays with data from netcdf data vars within a tiledb group."""
         for var_name in domain_vars:
-            data_var = self.data_model._ncds_vars[var_name]
+            data_var = self.data_model.variables[var_name]
             self.populate_array(var_name, data_var, group_dirname)
 
     def create_domains(self):
@@ -173,8 +173,8 @@ class TDBWriter(object):
         assert var_name in other_data_model.data_var_names
 
         # And is the append dimension valid?
-        self_data_var = self.data_model._ncds_vars[var_name]
-        other_data_var = other_data_model._ncds_vars[var_name]
+        self_data_var = self.data_model.variables[var_name]
+        other_data_var = other_data_model.variables[var_name]
         assert append_dim in self_data_var.dimensions
         assert append_dim in other_data_var.dimensions
         assert self_data_var.dimensions == other_data_var.dimensions
@@ -226,7 +226,7 @@ class ZarrWriter(object):
         """
         # Write domain variables and dimensions into group.
         for var_name in var_names:
-            nc_data_var = self.data_model._ncds_vars[var_name]
+            nc_data_var = self.data_model.variables[var_name]
             chunks = self.data_model.get_chunks(var_name)
             data_array = self.group.create_dataset(var_name,
                                                      shape=nc_data_var.shape,
@@ -272,7 +272,7 @@ class ZarrWriter(object):
         unique_flat_keys = set([k for domain in keys for k in domain])
         self.create_variable_datasets(unique_flat_keys)
 
-    def append(self, other_data_model, group_name=None):
+    def append(self, other_data_model, var_name, append_dim):
         """
         Append the contents of other onto self.group, optionally specifying
         a single zarr array to append to with `group_name`.
@@ -298,6 +298,6 @@ class ZarrWriter(object):
         group_names = other_data_model.data_var_names if group_name is None else [group_name]
         for group_name in group_names:
             self_array = getattr(self.group, group_name)
-            other_var = other_data_model._ncds_vars[group_name]
+            other_var = other_data_model.variables[group_name]
             axis = 0
             self_array.append(other_var[...], axis=axis)
