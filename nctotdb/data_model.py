@@ -16,7 +16,7 @@ class NCDataModel(object):
     cell_methods = []
     cell_measures = []
     unlimited_dim_coords = []
-    
+
     domains = []
     domain_varname_mapping = None
     varname_domain_mapping = None
@@ -26,29 +26,29 @@ class NCDataModel(object):
     DataVar = namedtuple('DataVar', ['name', 'units', 'coordinates',
                                      'shape', 'chunking', 'dtype'])
     CoordVar = namedtuple('CoordVar', ['name', 'units', 'dimensions', 'shape', 'dtype'])
-    
+
     def __init__(self, netcdf_filename):
         self.netcdf_filename = netcdf_filename
         self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
-        
+
         self._ncds_dims = self._ncds.dimensions
         self._ncds_dims_names = list(self._ncds_dims.keys())
         self._ncds_vars = self._ncds.variables
         self._ncds_vars_names = list(self._ncds.variables.keys())
         self._ncds_attrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
-        
+
         self._classified = False
-        
+
     def get_data_var(self, variable_name):
         """Return useful metadata from a data variable."""
         variable = self._ncds_vars[variable_name]
         return self.DataVar(**{field: getattr(variable, field) for field in self.DataVar})
-        
+
     def get_coordinate_var(self, variable_name):
         """Return useful metadata from a coordinate variable."""
         variable = self._ncds_vars[variable_name]
         return self.CoordVar(**{field: getattr(variable, field) for field in self.CoordVar})
-        
+
     def classify_variables(self):
         """
         Classify all of the NetCDF variables as one of the following:
@@ -62,24 +62,24 @@ class NCDataModel(object):
           * (Cell Methods)
           * Unlimited Dim Coords
           * Something else.
-        
+
         """
         # Classify unlimited dimensions.
         self.unlimited_dim_coords = [name for name in self._ncds_dims_names
                                      if self._ncds_dims[name].isunlimited()]
-        
+
         classified_vars = []
         for variable_name, variable in self._ncds_vars.items():
             # Check if this variable is a grid mapping variable.
             if hasattr(variable, 'grid_mapping_name'):
                 self.grid_mapping.append(variable_name)
                 classified_vars.append(variable_name)
-                
+
             # Check if this variable is a data variable.
             elif hasattr(variable, 'coordinates'):
                 self.data_var_names.append(variable_name)
                 classified_vars.append(variable_name)
-            
+
             # Check if this variable is a coordinate - dimension or aux.
             elif hasattr(variable, 'dimensions'):
                 if variable_name in self._ncds_dims_names:
@@ -101,32 +101,32 @@ class NCDataModel(object):
                 self.cell_measures.append(variable_name)
                 classified_vars.append(variable_name)
                 classified_vars.append(variable_name)
-                
+
             # TODO: check if it's a cell method variable
 #             elif hasattr(variable, 'cell_measures'):
 #                 pass
-        
+
         # What have we still missed?
         unclassified_vars = list(set(self._ncds_vars_names) - set(classified_vars))
-        
+
         if len(unclassified_vars):
             # We're not trying again, so just print them.
             print(f'Unclassified vars: {unclassified_vars}')
-                
+
         # We've now classified this NC file.
         self._classified = True
 
     def get_chunks(self, data_var_name):
         """
         Get chunks for a named data variable `data_var_name`.
-        
+
         Chunking can be tricky as 'contiguous' is a valid NetCDF
         chunking strategy (i.e. there's only one chunk and the data is
         contiguous on disk). In this case we want the chunking to match
         the shape, which is an equivalent statement.
         One heuristic we apply is that for ndim > 3 the chunking of all
         leading dimensions is [1,] to avoid very large chunks.
-        
+
         """
         data_var = self._ncds_vars[data_var_name]
         chunks = data_var.chunking()
@@ -143,7 +143,7 @@ class NCDataModel(object):
             else:
                 chunks = shape
         return chunks
-        
+
     def get_domains(self):
         """
         Determine the unique set of domains described in all the variables in the dataset.
@@ -202,19 +202,19 @@ class NCDataModel(object):
                     break
             name_domain_mapping[valid_domain].append(var_name)
         self.domain_varname_mapping = name_domain_mapping
-        
+
     def get_metadata(self):
         """
         Set extra metadata now that we've classified the dataset variables, notably:
-        
+
           * the domain(s)
           * chunks
           * shape
-          
+
         The last two are only done if there is just a single variable, otherwise they are
-        left as `None`, and downstream writer class is responsible for setting these on a 
+        left as `None`, and downstream writer class is responsible for setting these on a
         per-domain or per-data_variable basis.
-        
+
         """
         n_data_vars = len(self.data_var_names)
         if n_data_vars == 1:
@@ -231,6 +231,6 @@ class NCDataModel(object):
         else:
             # No data var means trouble.
             raise ValueError(f'Expected to find at least one data var, but found {n_data_vars}.')
-            
+
         # Also create the inverse mapping of var_name --> domain.
         self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
