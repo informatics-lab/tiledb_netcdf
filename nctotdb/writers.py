@@ -111,15 +111,6 @@ class TDBWriter(Writer):
                           tile=chunks,
                           dtype=dim_dtype)
 
-    def _create_tdb_attrs(self, data_vars):
-        # Create array attribute.
-        tdb_attrs = []
-        for phenom_name in data_vars:
-            data_var = self.data_model.variables[phenom_name]
-            phenom = tiledb.Attr(name=phenom_name, dtype=data_var.dtype)
-            tdb_attrs.append(phenom)
-        return tdb_attrs
-
     def create_domain_arrays(self, domain_vars, group_dirname, coords=False):
         """Create one single-attribute array per data var in this NC domain."""
         for var_name in domain_vars:

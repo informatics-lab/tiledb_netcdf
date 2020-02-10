@@ -35,16 +35,6 @@ class NCDataModel(object):
 
         self._classified = False
 
-    def get_data_var(self, variable_name):
-        """Return useful metadata from a data variable."""
-        variable = self.variables[variable_name]
-        return self.DataVar(**{field: getattr(variable, field) for field in self.DataVar})
-
-    def get_coordinate_var(self, variable_name):
-        """Return useful metadata from a coordinate variable."""
-        variable = self.variables[variable_name]
-        return self.CoordVar(**{field: getattr(variable, field) for field in self.CoordVar})
-
     def classify_variables(self):
         """
         Classify all of the NetCDF variables as one of the following:
