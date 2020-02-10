@@ -60,7 +60,9 @@ class TDBWriter(Writer):
     """
     def __init__(self, data_model, array_filepath,
                  array_name=None, unlimited_dims=None):
-        super().__init__(data_model, filepath, array_name, unlimited_dims)
+        super().__init__(data_model, array_filepath, array_name, unlimited_dims)
+        if self.unlimited_dims is None:
+            self.unlimited_dims = []
 
     def _public_domain_name(self, domain):
         domain_index = self.data_model.domains.index(domain)
@@ -193,7 +195,7 @@ class TDBWriter(Writer):
 
             # Create group.
             domain_name = self._public_domain_name(domain)
-            group_dirname = os.path.join(self.tiledb_filepath, self.array_name, domain_name)
+            group_dirname = os.path.join(self.array_filepath, self.array_name, domain_name)
             # TODO: why is this necessary? Shouldn't tiledb create if this dir does not exist?
             self._create_tdb_directory(group_dirname)
             tiledb.group_create(group_dirname)
