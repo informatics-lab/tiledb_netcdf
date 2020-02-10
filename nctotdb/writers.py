@@ -29,17 +29,25 @@ class Writer(object):
         assert var_name in self.data_model.data_var_names
         assert var_name in other_data_model.data_var_names
 
+        self_var = self.data_model.variables[var_name]
+        other_var = other_data_model.variables[var_name]
         # And is the append dimension valid?
-        assert append_dim in self.data_model.variables[var_name].dimensions
-        assert append_dim in other_data_model.variables[var_name].dimensions
+        assert append_dim in self_var.dimensions
+        assert append_dim in other_var.dimensions
         # And are the two data vars on the same domain?
-        assert self_data_var.dimensions == other_data_var.dimensions
+        assert self_var.dimensions == other_var.dimensions
 
-    def _append_dimension(self, append_dim):
-        """Determine the index of the dimension for the append operation."""
-        if not isinstance(append_dim, int):
-            append_dim = self.data_model.variables[data_var].dimensions.index(append_dim)
-        return append_dim
+    def _append_dimension(self, var_name, append_desc):
+        """Determine the name and index of the dimension for the append operation."""
+        if not isinstance(append_desc, int):
+            # Find the append axis from the dimension name.
+            append_axis = self.data_model.variables[var_name].dimensions.index(append_desc)
+            append_dim = append_desc
+        else:
+            # Find the append dimension name from the axis.
+            append_axis = append_desc
+            append_dim = self.data_model.dimensions[append_axis]
+        return append_axis, append_dim
 
 
 class TDBWriter(Writer):
@@ -210,13 +218,13 @@ class TDBWriter(Writer):
         domain_path = os.path.join(self.tiledb_filepath, self.array_name, domain_name)
 
         # Get the index for the append dimension.
-        append_dim = self._append_dimension(append_dim)
+        append_axis, _ = self._append_dimension(var_name, append_dim)
 
         # Get the offset along the append dimension, assuming that self and other are
         # contiguous along this dimension.
-        append_dim_offset = self_data_var.shape[append_dim]
+        append_dim_offset = self_data_var.shape[append_axis]
         offsets = [0] * len(self_data_var.shape)
-        offsets[append_dim] = append_dim_offset
+        offsets[append_axis] = append_dim_offset
 
         # And append the data.
         self.populate_array(var_name, other_data_var, domain_path,
@@ -309,8 +317,12 @@ class ZarrWriter(Writer):
         self._append_checker(other_data_model, var_name, append_dim)
 
         # Work out the index of the append dimension.
-        append_dim = self._append_dimension(append_dim)
+        append_axis, append_dim = self._append_dimension(var_name, append_dim)
 
-        # Run the append.
+        # Append data to the phenomenon.
         other_data_var = other_data_model.variables[var_name]
-        getattr(self.group, var_name).append(other_var[...], axis=append_dim)
+        getattr(self.group, var_name).append(other_data_var[...], axis=append_axis)
+
+        # Append coordinate values to the append dimension.
+        other_dim = other_data_model.variables[append_dim]
+        getattr(self.group, append_dim).append(other_dim[...], axis=0)
