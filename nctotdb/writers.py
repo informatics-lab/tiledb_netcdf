@@ -60,7 +60,9 @@ class TDBWriter(Writer):
     """
     def __init__(self, data_model, array_filepath,
                  array_name=None, unlimited_dims=None):
-        super().__init__(data_model, filepath, array_name, unlimited_dims)
+        super().__init__(data_model, array_filepath, array_name, unlimited_dims)
+        if self.unlimited_dims is None:
+            self.unlimited_dims = []
 
     def _public_domain_name(self, domain):
         domain_index = self.data_model.domains.index(domain)
@@ -77,7 +79,7 @@ class TDBWriter(Writer):
         except FileExistsError:
             pass
 
-    def _create_tdb_dim(self, dim_name):
+    def _create_tdb_dim(self, dim_name, coords):
         dim_coord = self.data_model.variables[dim_name]
         chunks = self.data_model.get_chunks(dim_name)
 
@@ -98,28 +100,25 @@ class TDBWriter(Writer):
         else:
             domain_max = dim_coord_len
 
+        # Modify the name of the dimension if this dimension describes the domain
+        # for a dim coord array.
+        # Array attrs and dimensions must have different names.
+        if coords:
+            dim_name = f'{dim_name}_coord'
+
         return tiledb.Dim(name=dim_name,
                           domain=(0, domain_max),
                           tile=chunks,
                           dtype=dim_dtype)
 
-    def _create_tdb_attrs(self, data_vars):
-        # Create array attribute.
-        tdb_attrs = []
-        for phenom_name in data_vars:
-            data_var = self.data_model.variables[phenom_name]
-            phenom = tiledb.Attr(name=phenom_name, dtype=data_var.dtype)
-            tdb_attrs.append(phenom)
-        return tdb_attrs
-
-    def create_domain_arrays(self, domain_vars, group_dirname):
-        # Create one single-attribute array per data var in this NC domain.
-
+    def create_domain_arrays(self, domain_vars, group_dirname, coords=False):
+        """Create one single-attribute array per data var in this NC domain."""
         for var_name in domain_vars:
             # Set dims for the enclosing domain.
+
             data_var = self.data_model.variables[var_name]
             data_var_dims = data_var.dimensions
-            array_dims = [self._create_tdb_dim(dim_name) for dim_name in data_var_dims]
+            array_dims = [self._create_tdb_dim(dim_name, coords) for dim_name in data_var_dims]
             tdb_domain = tiledb.Domain(*array_dims)
 
             # Get tdb attributes.
@@ -159,6 +158,21 @@ class TDBWriter(Writer):
                 # Set tiledb metadata from data var ncattrs.
                 for ncattr in data_var.ncattrs():
                     A.meta[ncattr] = data_var.getncattr(ncattr)
+                # Add metadata describing whether this is a coord or data var.
+                if var_name in self.data_model.data_var_names:
+                    # A data var gets a `data_var` key in the metadata dictionary,
+                    # value being all the dim coords that describe it.
+                    # XXX: can't add list or tuple as values to metadata dictionary...
+                    dim_coord_names = self.data_model.variables[var_name].dimensions
+                    A.meta['data_var'] = ','.join(n for n in dim_coord_names)
+                elif var_name in self.data_model.dim_coord_names:
+                    # A dim coord gets a `coord` key in the metadata dictionary,
+                    # value being the name of the coordinate.
+                    A.meta['coord'] = var_name
+                else:
+                    # Don't know how to handle this. It might be an aux or scalar
+                    # coord, but we're not currently writing TDB arrays for them.
+                    pass
 
     def populate_domain_arrays(self, domain_vars, group_dirname):
         """Populate all arrays with data from netcdf data vars within a tiledb group."""
@@ -173,19 +187,24 @@ class TDBWriter(Writer):
 
         """
         for domain in self.data_model.domains:
-            # Get the variables in this netcdf super-domain.
+            # Get the data and coord variables in this domain.
             domain_vars = self.data_model.domain_varname_mapping[domain]
+            # Defined for the sake of clarity (each `domain` is a list of its dim coords).
+            domain_coords = domain
 
             # Create group.
             domain_name = self._public_domain_name(domain)
-            group_dirname = os.path.join(self.tiledb_filepath, self.array_name, domain_name)
+            group_dirname = os.path.join(self.array_filepath, self.array_name, domain_name)
             # TODO: why is this necessary? Shouldn't tiledb create if this dir does not exist?
             self._create_tdb_directory(group_dirname)
             tiledb.group_create(group_dirname)
 
+            # Create and write arrays for each domain-describing coordinate.
+            self.create_domain_arrays(domain_coords, group_dirname, coords=True)
+            self.populate_domain_arrays(domain_coords, group_dirname)
+
             # Get data vars in this domain and create an array for the domain.
             self.create_domain_arrays(domain_vars, group_dirname)
-
             # Populate this domain's array.
             self.populate_domain_arrays(domain_vars, group_dirname)
 
