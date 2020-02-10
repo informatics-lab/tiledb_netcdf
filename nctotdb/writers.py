@@ -159,6 +159,19 @@ class TDBWriter(Writer):
                 # Set tiledb metadata from data var ncattrs.
                 for ncattr in data_var.ncattrs():
                     A.meta[ncattr] = data_var.getncattr(ncattr)
+                # Add metadata describing whether this is a coord or data var.
+                if var_name in self.data_model.data_var_names:
+                    # A data var gets a `data_var` key in the metadata dictionary,
+                    # value being all the dim coords that describe it.
+                    A.meta['data_var'] = self.data_model.variables[var_name].dimensions
+                elif var_name in self.data_model.dim_coord_names:
+                    # A dim coord gets a `coord` key in the metadata dictionary,
+                    # value being the name of the coordinate.
+                    A.meta['coord'] = var_name
+                else:
+                    # Don't know how to handle this. It might be an aux or scalar
+                    # coord, but we're not currently writing TDB arrays for them.
+                    pass
 
     def populate_domain_arrays(self, domain_vars, group_dirname):
         """Populate all arrays with data from netcdf data vars within a tiledb group."""
@@ -173,8 +186,10 @@ class TDBWriter(Writer):
 
         """
         for domain in self.data_model.domains:
-            # Get the variables in this netcdf super-domain.
+            # Get the data and coord variables in this domain.
             domain_vars = self.data_model.domain_varname_mapping[domain]
+            # Defined for the sake of clarity (each `domain` is a list of its dim coords).
+            domain_coords = domain
 
             # Create group.
             domain_name = self._public_domain_name(domain)
@@ -183,9 +198,12 @@ class TDBWriter(Writer):
             self._create_tdb_directory(group_dirname)
             tiledb.group_create(group_dirname)
 
+            # Create and write arrays for each domain-describing coordinate.
+            self.create_domain_arrays(domain_coords, group_dirname)
+            self.populate_domain_arrays(domain_coords, group_dirname)
+
             # Get data vars in this domain and create an array for the domain.
             self.create_domain_arrays(domain_vars, group_dirname)
-
             # Populate this domain's array.
             self.populate_domain_arrays(domain_vars, group_dirname)
 
