@@ -25,9 +25,6 @@ class Reader(object):
     def artifact(self, value):
         self._artifact = value
 
-    def save_artifact(self):
-        pass
-
     def to_iris(self):
         """Convert the input to an Iris cube or cubelist, depending on input."""
         raise NotImplementedError
