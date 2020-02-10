@@ -79,7 +79,7 @@ class TDBWriter(Writer):
         except FileExistsError:
             pass
 
-    def _create_tdb_dim(self, dim_name):
+    def _create_tdb_dim(self, dim_name, coords):
         dim_coord = self.data_model.variables[dim_name]
         chunks = self.data_model.get_chunks(dim_name)
 
@@ -100,6 +100,12 @@ class TDBWriter(Writer):
         else:
             domain_max = dim_coord_len
 
+        # Modify the name of the dimension if this dimension describes the domain
+        # for a dim coord array.
+        # Array attrs and dimensions must have different names.
+        if coords:
+            dim_name = f'{dim_name}_coord'
+
         return tiledb.Dim(name=dim_name,
                           domain=(0, domain_max),
                           tile=chunks,
@@ -114,14 +120,14 @@ class TDBWriter(Writer):
             tdb_attrs.append(phenom)
         return tdb_attrs
 
-    def create_domain_arrays(self, domain_vars, group_dirname):
-        # Create one single-attribute array per data var in this NC domain.
-
+    def create_domain_arrays(self, domain_vars, group_dirname, coords=False):
+        """Create one single-attribute array per data var in this NC domain."""
         for var_name in domain_vars:
             # Set dims for the enclosing domain.
+
             data_var = self.data_model.variables[var_name]
             data_var_dims = data_var.dimensions
-            array_dims = [self._create_tdb_dim(dim_name) for dim_name in data_var_dims]
+            array_dims = [self._create_tdb_dim(dim_name, coords) for dim_name in data_var_dims]
             tdb_domain = tiledb.Domain(*array_dims)
 
             # Get tdb attributes.
@@ -165,7 +171,9 @@ class TDBWriter(Writer):
                 if var_name in self.data_model.data_var_names:
                     # A data var gets a `data_var` key in the metadata dictionary,
                     # value being all the dim coords that describe it.
-                    A.meta['data_var'] = self.data_model.variables[var_name].dimensions
+                    # XXX: can't add list or tuple as values to metadata dictionary...
+                    dim_coord_names = self.data_model.variables[var_name].dimensions
+                    A.meta['data_var'] = ','.join(n for n in dim_coord_names)
                 elif var_name in self.data_model.dim_coord_names:
                     # A dim coord gets a `coord` key in the metadata dictionary,
                     # value being the name of the coordinate.
@@ -201,7 +209,7 @@ class TDBWriter(Writer):
             tiledb.group_create(group_dirname)
 
             # Create and write arrays for each domain-describing coordinate.
-            self.create_domain_arrays(domain_coords, group_dirname)
+            self.create_domain_arrays(domain_coords, group_dirname, coords=True)
             self.populate_domain_arrays(domain_coords, group_dirname)
 
             # Get data vars in this domain and create an array for the domain.
