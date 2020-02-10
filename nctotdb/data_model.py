@@ -111,7 +111,7 @@ class NCDataModel(object):
         # We've now classified this NC file.
         self._classified = True
 
-    def get_chunks(self, data_var_name):
+    def get_chunks(self, data_var_name, max_contiguous_dims=3):
         """
         Get chunks for a named data variable `data_var_name`.
 
@@ -128,7 +128,6 @@ class NCDataModel(object):
         if chunks == 'contiguous':
             shape = data_var.shape
             data_ndim = len(shape)
-            max_contiguous_dims = 3
             overflow_dims = data_ndim - max_contiguous_dims
             if data_ndim > max_contiguous_dims:
                 # More than 3D so chunk along outer (leading) dimension
