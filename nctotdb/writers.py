@@ -77,6 +77,7 @@ class TDBWriter(Writer):
         dim_coord_len, = dim_coord.shape
 
         # Set the tdb dimension dtype to `int64` regardless of input.
+        # Dimensions must have int indices for dense array schemas.
         # All tdb dims in a domain must have exactly the same dtype.
         dim_dtype = np.int64
 

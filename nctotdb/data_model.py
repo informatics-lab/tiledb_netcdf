@@ -23,10 +23,6 @@ class NCDataModel(object):
     shape = None
     chunks = None
 
-    DataVar = namedtuple('DataVar', ['name', 'units', 'coordinates',
-                                     'shape', 'chunking', 'dtype'])
-    CoordVar = namedtuple('CoordVar', ['name', 'units', 'dimensions', 'shape', 'dtype'])
-
     def __init__(self, netcdf_filename):
         self.netcdf_filename = netcdf_filename
         self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
@@ -108,7 +104,6 @@ class NCDataModel(object):
 
         # What have we still missed?
         unclassified_vars = list(set(self.variable_names) - set(classified_vars))
-
         if len(unclassified_vars):
             # We're not trying again, so just print them.
             print(f'Unclassified vars: {unclassified_vars}')
