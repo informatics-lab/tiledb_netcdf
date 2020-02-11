@@ -162,13 +162,14 @@ class TDBWriter(Writer):
                 if var_name in self.data_model.data_var_names:
                     # A data var gets a `data_var` key in the metadata dictionary,
                     # value being all the dim coords that describe it.
+                    A.meta['dataset'] = var_name
                     # XXX: can't add list or tuple as values to metadata dictionary...
                     dim_coord_names = self.data_model.variables[var_name].dimensions
-                    A.meta['data_var'] = ','.join(n for n in dim_coord_names)
+                    A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
                 elif var_name in self.data_model.dim_coord_names:
                     # A dim coord gets a `coord` key in the metadata dictionary,
                     # value being the name of the coordinate.
-                    A.meta['coord'] = var_name
+                    A.meta['coord'] = self.data_model.dimensions[var_name].name
                 else:
                     # Don't know how to handle this. It might be an aux or scalar
                     # coord, but we're not currently writing TDB arrays for them.
@@ -195,8 +196,9 @@ class TDBWriter(Writer):
             # Create group.
             domain_name = self._public_domain_name(domain)
             group_dirname = os.path.join(self.array_filepath, self.array_name, domain_name)
-            # TODO: why is this necessary? Shouldn't tiledb create if this dir does not exist?
+            # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
             self._create_tdb_directory(group_dirname)
+            # TODO it would be good to write the domain's dim names into the group meta.
             tiledb.group_create(group_dirname)
 
             # Create and write arrays for each domain-describing coordinate.
