@@ -1,3 +1,4 @@
+from itertools import chain
 import os
 
 import cf_units
@@ -45,6 +46,32 @@ class TDBReader(Reader):
 
         self.storage_options = storage_options
         self.groups = {}
+        self._arrays = None
+
+    @property
+    def arrays(self):
+        if self._arrays is None:
+            self._array_paths()
+        return self._arrays
+
+    @arrays.setter
+    def arrays(self, value):
+        self._arrays = value
+
+    def check_groups(self):
+        if not len(self.groups.keys()):
+            self.get_groups_and_arrays()
+
+    def _array_paths(self):
+        """Produce a mapping of array name to array path irrespective of groups."""
+        self.check_groups()
+        all_paths = chain.from_iterable([paths for paths in self.groups.values()])
+        arrays = {}
+        for path in all_paths:
+            _, array_name = os.path.split(path)
+            # XXX assumes that we will not have duplicated array names.
+            arrays[array_name] = path
+        self.arrays = arrays
 
     def _tdb_walker(self):
         group = None
@@ -132,13 +159,32 @@ class TDBReader(Reader):
             subarray = A[tuple(indices)]
         return subarray
 
-    def extract(self, array_name):
+    def _extract(self, array_name):
         """
-        Extract a single named data array, plus all connected dimension arrays,
-        from a TileDB.
+        Return the path to a named array, plus paths for all the associated
+        dimension arrays.
 
         """
-        pass
+        # Sanity check the requested array name is in this TileDB.
+        assert array_name in self.arrays.keys()
+
+        extract_array_path = self.arrays[array_name]
+        extract_group_path, _ = os.path.split(extract_array_path)
+        extract_group_arrays = self.groups[extract_group_path]
+
+        with tiledb.open(extract_array_path, 'r') as A:
+            dim_names = A.meta['dimensions'].split(',')
+
+        dim_paths = []
+        for dim_name in dim_names:
+            for array_path in extract_group_arrays:
+                if array_path.endswith(dim_name):
+                    dim_paths.append(array_path)
+                    break
+        # Confirm we have an array path for each dim_name.
+        assert len(dim_paths) == len(dim_names)
+
+        return extract_array_path, dim_paths
 
     def _load_dim(self, dim_path):
         """
@@ -253,6 +299,7 @@ class TDBReader(Reader):
         # adding the appropriate coords and dims mapping, and pulling metadata out of the
         # data array's meta (note that cell methods and STASH will be special cases).
         # Add all discrete cubes to a cubelist and return.
+        self.check_groups()
 
         cubes = []
         for group_path, group_array_paths in self.groups.items():
