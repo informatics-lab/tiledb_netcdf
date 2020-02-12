@@ -73,21 +73,20 @@ class TDBReader(Reader):
             arrays[array_name] = path
         self.arrays = arrays
 
-    def _tdb_walker(self):
-        group = None
-        def inner(itm_path, itm_type):
-            nonlocal group
-            if itm_type == 'group':
-                group = itm_path
-                self.groups[group] = []
-            else:
-                self.groups[group].append(itm_path)
-        return inner
+    def classifier(self, item_path, item_type):
+        """
+        Store and classify items in a `tiledb.walk` operation as either a TileDB group
+        or a TileDB array in a given TileDB group.
 
-    def get_groups_and_arrays():
-        classifier = self._tdb_walker()
-        tiledb.walk(self.input_filepath,
-                    lambda itm_path, itm_type: classifier(obj_path, itm_type))
+        """
+        if item_type == 'group':
+            self.groups[item_path] = []
+        else:
+            group, _ = os.path.split(item_path)
+            self.groups[group].append(item_path)
+
+    def get_groups_and_arrays(self):
+        tiledb.walk(self.input_filepath, self.classifier)
 
     def tdb_dir_contents(self, dir):
         contents = []

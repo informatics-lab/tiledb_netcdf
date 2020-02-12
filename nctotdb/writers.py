@@ -236,7 +236,7 @@ class TDBWriter(Writer):
         # Get domain for var_name and tiledb array path.
         domain = self.data_model.varname_domain_mapping[var_name]
         domain_name = self._public_domain_name(domain)
-        domain_path = os.path.join(self.tiledb_filepath, self.array_name, domain_name)
+        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
 
         # Get the index for the append dimension.
         append_axis, _ = self._append_dimension(var_name, append_dim)
