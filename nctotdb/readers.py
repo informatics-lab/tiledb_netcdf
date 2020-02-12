@@ -273,11 +273,10 @@ class TDBReader(Reader):
         data_array_paths = []
         for array_path in group_array_paths:
             with tiledb.open(array_path, 'r') as A:
-                data_array = A.meta.get('dataset')
-                dim_array = A.meta.get('coord')
-            if data_array is not None:
+                metadata = {k: v for k, v in A.meta.items()}
+            if metadata.get('dataset') is not None:
                 data_array_paths.append(array_path)
-            elif dim_array is not None:
+            elif metadata.get('coord') is not None:
                 dim_array_paths.append(array_path)
             else:
                 # Can't handle this!
