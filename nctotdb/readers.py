@@ -168,23 +168,23 @@ class TDBReader(Reader):
         # Sanity check the requested array name is in this TileDB.
         assert array_name in self.arrays.keys()
 
-        extract_array_path = self.arrays[array_name]
-        extract_group_path, _ = os.path.split(extract_array_path)
-        extract_group_arrays = self.groups[extract_group_path]
+        named_array_path = self.arrays[array_name]
+        named_group_path, _ = os.path.split(named_array_path)
+        named_group_arrays = self.groups[named_group_path]
 
-        with tiledb.open(extract_array_path, 'r') as A:
+        with tiledb.open(named_array_path, 'r') as A:
             dim_names = A.meta['dimensions'].split(',')
 
         dim_paths = []
         for dim_name in dim_names:
-            for array_path in extract_group_arrays:
+            for array_path in named_group_arrays:
                 if array_path.endswith(dim_name):
                     dim_paths.append(array_path)
                     break
         # Confirm we have an array path for each dim_name.
         assert len(dim_paths) == len(dim_names)
 
-        return extract_array_path, dim_paths
+        return named_array_path, dim_paths
 
     def _load_dim(self, dim_path):
         """
@@ -286,7 +286,7 @@ class TDBReader(Reader):
 
         return dim_array_paths, data_array_paths
 
-    def to_iris(self):
+    def to_iris(self, name=None):
         """
         Convert all arrays in a TileDB into one or more Iris cubes.
 
@@ -301,8 +301,15 @@ class TDBReader(Reader):
         # Add all discrete cubes to a cubelist and return.
         self.check_groups()
 
+        if name is not None:
+            named_array_path, named_array_dims = self._extract(name)
+            named_array_group_path, _ = os.path.split(named_array_path)
+            iter_groups = {named_array_group_path: named_array_dims}
+        else:
+            iter_groups = self.groups
+
         cubes = []
-        for group_path, group_array_paths in self.groups.items():
+        for group_path, group_array_paths in iter_groups.items():
             dim_paths, data_paths = self._get_arrays_and_dims(group_array_paths)
             group_coords = self._load_group_dims(dim_paths)
             group_cubes = self._load_group_arrays(data_paths)
