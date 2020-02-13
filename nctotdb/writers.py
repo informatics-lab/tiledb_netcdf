@@ -137,8 +137,8 @@ class TDBWriter(Writer):
             start_index = [start_index] * len(shape)
 
         array_indices = []
-        for dim, start_ind in zip(shape, start_index):
-            array_indices.append(slice(start_ind, dim+start_ind))
+        for dim_len, start_ind in zip(shape, start_index):
+            array_indices.append(slice(start_ind, dim_len+start_ind))
         return tuple(array_indices)
 
     def populate_array(self, var_name, data_var, group_dirname,
@@ -224,6 +224,8 @@ class TDBWriter(Writer):
           * for now, that the data in other directly follows on from the
             data in self, so that there are no gaps or overlaps in the
             appended data
+
+        XXX doesn't extend the dimension that describes the coordinate!
 
         """
         # Check if the append can go ahead.

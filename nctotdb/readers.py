@@ -11,6 +11,28 @@ import xarray as xr
 import zarr
 
 
+# Ref Iris: https://github.com/SciTools/iris/blob/master/lib/iris/_cube_coord_common.py#L75
+IRIS_FORBIDDEN_KEYS = set([
+        "standard_name",
+        "long_name",
+        "units",
+        "bounds",
+        "axis",
+        "calendar",
+        "leap_month",
+        "leap_year",
+        "month_lengths",
+        "coordinates",
+        "grid_mapping",
+        "climatology",
+        "cell_methods",
+        "formula_terms",
+        "compress",
+        "add_offset",
+        "scale_factor",
+        "_FillValue",
+    ])
+
 class Reader(object):
     """
     Abstract reader class that defines the API.
@@ -185,6 +207,47 @@ class TDBReader(Reader):
 
         return named_array_path, dim_paths
 
+    def _array_shape(self, nonempty_domain):
+        """
+        Use the TileDB array's nonempty domain (i.e. the domain that encapsulates
+        all written cells) to set the shape of the data to be read out of the
+        TileDB array.
+
+        """
+        # We need to include the stop index, not exclude it.
+        slices = [slice(start, stop+1, 1) for (start, stop) in nonempty_domain]
+        return tuple(slices)  # Can only index with tuple, not list.
+
+    def _handle_attributes(self, attrs):
+        """
+        Iris contains a list of attributes that may not be written to a cube/coord's
+        attributes dictionary. If any of thes attributes are present in a
+        TileDB array's `meta`, remove them.
+
+        """
+        attrs_keys = set(attrs.keys())
+        allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS)
+        return {k: attrs[k] for k in allowed_keys}
+
+    def _from_tdb_array(self, array_path, naming_key, to_dask=False):
+        with tiledb.open(array_path, 'r') as A:
+            metadata = {k: v for k, v in A.meta.items()}
+            array_name = metadata[naming_key]
+            array_inds = self._array_shape(A.nonempty_domain())
+            # This may well not maintain lazy data...
+            if to_dask:
+                # Borrowed from:
+                # https://github.com/dask/dask/blob/master/dask/array/tiledb_io.py#L4-L6
+                schema = A.schema
+                chunks = [schema.domain.dim(i).tile for i in range(schema.ndim)]
+                points = da.from_array(A[array_inds][array_name],
+                                       chunks,
+                                       name=naming_key)
+            else:
+                points = A[array_inds][array_name]
+        print(f'{array_name}: {array_inds} ({points.shape})')
+        return metadata, points
+
     def _load_dim(self, dim_path):
         """
         Create an Iris DimCoord from a TileDB array describing a dimension.
@@ -192,14 +255,12 @@ class TDBReader(Reader):
         # TODO not handled here: circular, coord_system.
 
         """
-        with tiledb.open(dim_path, 'r') as D:
-            metadata = D.meta
-            points = D[:]
+        metadata, points = self._from_tdb_array(dim_path, 'coord')
 
         coord_name = metadata.pop('coord')
-        standard_name = metadata.pop('standard_name')
-        long_name = metadata.pop('long_name')
-        var_name = metadata.pop('long_name')
+        standard_name = metadata.pop('standard_name', None)
+        long_name = metadata.pop('long_name', None)
+        var_name = metadata.pop('var_name', None)
 
         units = metadata.pop('units')
         if coord_name == 'time':
@@ -207,11 +268,12 @@ class TDBReader(Reader):
             calendar = metadata.pop('calendar')
             units = cf_units.Unit(units, calendar=calendar)
 
-        coord = DimCoord(points, 
-                         standard_name=coord_name,
+        safe_attrs = self._handle_attributes(metadata)
+        coord = DimCoord(points,
+                         standard_name=standard_name,
                          long_name=long_name,
                          units=units,
-                         attributes={k: v for k, v in metadata.items()})
+                         attributes=safe_attrs)
         return coord_name, coord
 
     def _load_group_dims(self, group_dim_paths):
@@ -230,26 +292,23 @@ class TDBReader(Reader):
         TODO not handled here: aux coords and dims, cell measures, aux factories.
 
         """
-        with tiledb.open(array_path, 'r') as A:
-            metadata = A.meta
-            attr_name = metadata.pop('dataset')
-            lazy_data = da.from_tiledb(array_path,
-                                       attribute=attr_name,
-                                       storage_options=self.storage_options)
+        metadata, lazy_data = self._from_tdb_array(array_path, 'dataset', to_dask=True)
 
+        attr_name = metadata.pop('dataset')
         cell_methods = parse_cell_methods(metadata.pop('cell_methods'))
-        dims = metadata.pop('dimensions').split(',')
+        dim_names = metadata.pop('dimensions').split(',')
         # Dim Coords And Dims (mapping of coords to cube axes).
-        dcad = [(group_dims[name], i) for i, name in enumerate(dims)]
+        dcad = [(group_dims[name], i) for i, name in enumerate(dim_names)]
+        safe_attrs = self._handle_attributes(metadata)
 
         return Cube(lazy_data,
-                    standard_name=metadata.pop('standard_name'),
-                    long_name=metadata.pop('long_name'),
-                    var_name=metadata.pop('var_name'),
-                    units=metadata.pop('units'),
+                    standard_name=metadata.pop('standard_name', None),
+                    long_name=metadata.pop('long_name', None),
+                    var_name=metadata.pop('var_name', None),
+                    units=metadata.pop('units', None),
                     dim_coords_and_dims=dcad,
                     cell_methods=cell_methods,
-                    attributes={k: v for k, v in metadata.items()})
+                    attributes=safe_attrs)
 
     def _load_group_arrays(self, data_paths, group_dims):
         """Load all data-describing (cube) arrays in the group."""
@@ -302,7 +361,7 @@ class TDBReader(Reader):
         if name is not None:
             named_array_path, named_array_dims = self._extract(name)
             named_array_group_path, _ = os.path.split(named_array_path)
-            iter_groups = {named_array_group_path: named_array_dims}
+            iter_groups = {named_array_group_path: named_array_dims + [named_array_path]}
         else:
             iter_groups = self.groups
 
@@ -310,7 +369,7 @@ class TDBReader(Reader):
         for group_path, group_array_paths in iter_groups.items():
             dim_paths, data_paths = self._get_arrays_and_dims(group_array_paths)
             group_coords = self._load_group_dims(dim_paths)
-            group_cubes = self._load_group_arrays(data_paths)
+            group_cubes = self._load_group_arrays(data_paths, group_coords)
             cubes.extend(group_cubes)
 
         self.artifact = cubes[0] if len(cubes) == 1 else CubeList(cubes)
