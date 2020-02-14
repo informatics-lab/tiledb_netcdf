@@ -374,8 +374,8 @@ class TDBReader(Reader):
         self.artifact = cubes[0] if len(cubes) == 1 else CubeList(cubes)
         return self.artifact
 
-    def to_xarray(self):
-        intermediate = self.to_iris()
+    def to_xarray(self, name=None):
+        intermediate = self.to_iris(name=name)
         self.artifact = xr.from_iris(intermediate)
         return self.artifact
 
