@@ -240,8 +240,9 @@ class TDBWriter(Writer):
         domain_name = self._public_domain_name(domain)
         domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
 
-        # Get the index for the append dimension.
-        append_axis, _ = self._append_dimension(var_name, append_dim)
+        # Get the index and name of the append dimension.
+        append_axis, append_dim = self._append_dimension(var_name, append_dim)
+        other_dim_var = other_data_model.variables[append_dim]
 
         # Get the offset along the append dimension, assuming that self and other are
         # contiguous along this dimension.
@@ -249,9 +250,12 @@ class TDBWriter(Writer):
         offsets = [0] * len(self_data_var.shape)
         offsets[append_axis] = append_dim_offset
 
-        # And append the data.
+        # Append the data from other.
         self.populate_array(var_name, other_data_var, domain_path,
                             start_index=offsets, write_meta=False)
+        # Append the extra dimension points from other.
+        self.populate_array(append_dim, other_dim_var, domain_path,
+                            start_index=append_dim_offset, write_meta=False)
 
 
 class ZarrWriter(Writer):
