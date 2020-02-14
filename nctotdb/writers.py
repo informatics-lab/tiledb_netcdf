@@ -225,8 +225,6 @@ class TDBWriter(Writer):
             data in self, so that there are no gaps or overlaps in the
             appended data
 
-        XXX doesn't extend the dimension that describes the coordinate!
-
         """
         # Check if the append can go ahead.
         self._append_checker(other_data_model, var_name, append_dim)
