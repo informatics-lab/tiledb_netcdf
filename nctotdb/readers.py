@@ -245,7 +245,6 @@ class TDBReader(Reader):
                                        name=naming_key)
             else:
                 points = A[array_inds][array_name]
-        print(f'{array_name}: {array_inds} ({points.shape})')
         return metadata, points
 
     def _load_dim(self, dim_path):

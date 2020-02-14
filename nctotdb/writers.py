@@ -246,7 +246,11 @@ class TDBWriter(Writer):
 
         # Get the offset along the append dimension, assuming that self and other are
         # contiguous along this dimension.
-        append_dim_offset = self_data_var.shape[append_axis]
+        with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
+            array_shape = A.nonempty_domain()
+        # We want to get the next index from the upper bound of
+        # the nonempty domain along the append axis.
+        append_dim_offset = array_shape[append_axis][1] + 1
         offsets = [0] * len(self_data_var.shape)
         offsets[append_axis] = append_dim_offset
 
