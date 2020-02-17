@@ -4,6 +4,8 @@ import numpy as np
 import tiledb
 import zarr
 
+from .data_model import NCDataModel
+
 
 class Writer(object):
     """
@@ -258,7 +260,7 @@ class TDBWriter(Writer):
                             start_index=offsets, write_meta=False)
         # Append the extra dimension points from other.
         self.populate_array(append_dim, other_dim_var, domain_path,
-                            start_index=append_dim_offset, write_meta=False)
+                            start_index=offsets[append_axis], write_meta=False)
 
     def _dim_inds(self, dim_points, start, stop, offset=0):
         """Convert coordinate values to index space."""
@@ -282,10 +284,10 @@ class TDBWriter(Writer):
         points_offset = other_start - self_stop
         inds_offset = int(points_offset / self_step) + self_stop_ind
 
-        i_start, _ = self._index_inds(dim_points, other_start, other_stop, inds_offset)
+        i_start, _ = self._dim_inds(dim_points, other_start, other_stop, inds_offset)
         return i_start
 
-    def tile(self, other_data_models, var_name, append_dim):
+    def tile(self, others, var_name, append_dim, verbose=False):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
         append operations from multiple data model objects. This is done by
@@ -293,36 +295,62 @@ class TDBWriter(Writer):
         each append dimension.
 
         TODO support multiple axis appends.
+        TODO check if there's already data at the write inds and add an overwrite?
 
         """
-        if isinstance(other_data_models, nctotdb.NCDataModel):
-            other_data_models = [other_data_models]
+        make_data_model = False
+        # Check what sort of thing `others` is.
+        if isinstance(others, NCDataModel):
+            others = [others]
+        elif isinstance(others, str):
+            others = [others]
+            make_data_model = True
+        else:
+            other = others[0]
+            if isinstance(other, str):
+                make_data_model = True
 
         append_axis, append_dim = self._append_dimension(var_name, append_dim)
 
-        self_data_var = self.other_data_model.variables[var_name]
+        self_data_var = self.data_model.variables[var_name]
         self_dim_var = self.data_model.variables[append_dim]
         self_dim_points = self_dim_var[:]
         self_dim_start, self_dim_stop, self_step = self._dim_points(self_dim_points)
-        self_ind_start, self_ind_end = self._dim_inds(self_dim_points,
-                                                      self_dim_start,
-                                                      self_dim_stop)
+        self_ind_start, self_ind_stop = self._dim_inds(self_dim_points,
+                                                       self_dim_start,
+                                                       self_dim_stop)
 
         failed_appends = []
-        for other_data_model in other_data_models:
+        for i, other in enumerate(others):
+            if make_data_model:
+                other_data_model = NCDataModel(other)
+                other_data_model.classify_variables()
+                other_data_model.get_metadata()
+            else:
+                other_data_model = other
+
+            if verbose:
+                fn = other_data_model.netcdf_filename
+                print(f'Processing {fn}...  ({i}/{len(others)})', end="\r")
+
             other_data_var = other_data_model.variables[var_name]
             other_dim_var = other_data_model.variables[append_dim]
             other_dim_points = other_dim_var[:]
 
             offsets = []
             try:
-                offset = self._dim_offset_inds(other_dim_points, )
-                self.append(other_data_model, var_name, append_dim, offsets=offset)
-            except:
-                failed_appends.append(other_data_model.netcdf_filename)
+                offset = self._dim_offsets(
+                    other_dim_points, self_ind_stop, self_dim_stop, self_step)
+                offsets = [0] * len(self_data_var.shape)
+                offsets[append_axis] = offset
+                self.append(other_data_model, var_name, append_dim, offsets=offsets)
+            except Exception as e:
+                failed_appends.append([other_data_model.netcdf_filename, e])
 
         if len(failed_appends):
-            print(f'Failed append operations for files: {", ".join(f for f in failed_appends)}')
+            print('Failed append operations for files:')
+            for failure in failed_appends:
+                print(f'  {failure[0]} - {failure[1]}')
 
 
 class ZarrWriter(Writer):
