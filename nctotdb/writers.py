@@ -210,7 +210,7 @@ class TDBWriter(Writer):
             # Populate this domain's array.
             self.populate_domain_arrays(domain_vars, group_dirname)
 
-    def append(self, other_data_model, var_name, append_dim):
+    def append(self, other_data_model, var_name, append_dim, offsets=None):
         """
         Append the data from a data variable in `other_data_model`
         by extending one dimension of that data variable in the tiledb
@@ -244,13 +244,14 @@ class TDBWriter(Writer):
 
         # Get the offset along the append dimension, assuming that self and other are
         # contiguous along this dimension.
-        with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
-            array_shape = A.nonempty_domain()
-        # We want to get the next index from the upper bound of
-        # the nonempty domain along the append axis.
-        append_dim_offset = array_shape[append_axis][1] + 1
-        offsets = [0] * len(self_data_var.shape)
-        offsets[append_axis] = append_dim_offset
+        if offsets is None:
+            with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
+                array_shape = A.nonempty_domain()
+            # We want to get the next index from the upper bound of
+            # the nonempty domain along the append axis.
+            append_dim_offset = array_shape[append_axis][1] + 1
+            offsets = [0] * len(self_data_var.shape)
+            offsets[append_axis] = append_dim_offset
 
         # Append the data from other.
         self.populate_array(var_name, other_data_var, domain_path,
@@ -258,6 +259,70 @@ class TDBWriter(Writer):
         # Append the extra dimension points from other.
         self.populate_array(append_dim, other_dim_var, domain_path,
                             start_index=append_dim_offset, write_meta=False)
+
+    def _dim_inds(self, dim_points, start, stop, offset=0):
+        """Convert coordinate values to index space."""
+        return [list(dim_points).index(si) + offset for si in [start, stop]]
+
+    def _dim_points(self, points):
+        """Convert a dimension variable (coordinate) points to index space."""
+        start, stop = points[0], points[-1]
+        step, = np.unique(np.diff(points))
+        return start, stop, step
+
+    def _dim_offsets(self, dim_points, self_stop_ind, self_stop, self_step):
+        """
+        Calculate the offset along a dimension given by `var_name` between self
+        and other.
+
+        """
+        other_start, other_stop, other_step = self._dim_points(dim_points)
+        assert self_step == other_step, "Step between coordinate points is not equal."
+
+        points_offset = other_start - self_stop
+        inds_offset = int(points_offset / self_step) + self_stop_ind
+
+        i_start, _ = self._index_inds(dim_points, other_start, other_stop, inds_offset)
+        return i_start
+
+    def tile(self, other_data_models, var_name, append_dim):
+        """
+        Enable multiple, possibly non-contiguous, eventually multi-axis
+        append operations from multiple data model objects. This is done by
+        working out where each tile fits relative to `self` in
+        each append dimension.
+
+        TODO support multiple axis appends.
+
+        """
+        if isinstance(other_data_models, nctotdb.NCDataModel):
+            other_data_models = [other_data_models]
+
+        append_axis, append_dim = self._append_dimension(var_name, append_dim)
+
+        self_data_var = self.other_data_model.variables[var_name]
+        self_dim_var = self.data_model.variables[append_dim]
+        self_dim_points = self_dim_var[:]
+        self_dim_start, self_dim_stop, self_step = self._dim_points(self_dim_points)
+        self_ind_start, self_ind_end = self._dim_inds(self_dim_points,
+                                                      self_dim_start,
+                                                      self_dim_stop)
+
+        failed_appends = []
+        for other_data_model in other_data_models:
+            other_data_var = other_data_model.variables[var_name]
+            other_dim_var = other_data_model.variables[append_dim]
+            other_dim_points = other_dim_var[:]
+
+            offsets = []
+            try:
+                offset = self._dim_offset_inds(other_dim_points, )
+                self.append(other_data_model, var_name, append_dim, offsets=offset)
+            except:
+                failed_appends.append(other_data_model.netcdf_filename)
+
+        if len(failed_appends):
+            print(f'Failed append operations for files: {", ".join(f for f in failed_appends)}')
 
 
 class ZarrWriter(Writer):
