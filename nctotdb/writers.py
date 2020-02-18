@@ -1,3 +1,4 @@
+import logging
 import os
 
 import numpy as np
@@ -287,7 +288,7 @@ class TDBWriter(Writer):
         i_start, _ = self._dim_inds(dim_points, other_start, other_stop, inds_offset)
         return i_start
 
-    def tile(self, others, var_name, append_dim, verbose=False):
+    def tile(self, other_data_models, var_name, append_dim, logfile=None):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
         append operations from multiple data model objects. This is done by
@@ -298,6 +299,12 @@ class TDBWriter(Writer):
         TODO check if there's already data at the write inds and add an overwrite?
 
         """
+        if logfile is not None:
+            logging.basicConfig(filename=log,
+                                level=logging.DEBUG,
+                                format='%(asctime)s %(message)s',
+                                datefmt='%d/%m/%Y %H:%M:%S')
+
         make_data_model = False
         # Check what sort of thing `others` is.
         if isinstance(others, NCDataModel):
@@ -320,7 +327,7 @@ class TDBWriter(Writer):
                                                        self_dim_start,
                                                        self_dim_stop)
 
-        failed_appends = []
+        failed_appends = 0
         for i, other in enumerate(others):
             if make_data_model:
                 other_data_model = NCDataModel(other)
@@ -345,12 +352,15 @@ class TDBWriter(Writer):
                 offsets[append_axis] = offset
                 self.append(other_data_model, var_name, append_dim, offsets=offsets)
             except Exception as e:
-                failed_appends.append([other_data_model.netcdf_filename, e])
+                failed_appends += 1
+                logging.info(f'{failure[0]} - {failure[1]}')
 
-        if len(failed_appends):
-            print('Failed append operations for files:')
-            for failure in failed_appends:
-                print(f'  {failure[0]} - {failure[1]}')
+        if failed_appends:
+            if logfile is not None:
+                extra_words = f'Check logfile {logfile!r} for more details'
+            else:
+                extra_words = ''
+            print(f'Failed append operations for files. {extra_words}')
 
 
 class ZarrWriter(Writer):
