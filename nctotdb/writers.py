@@ -1,6 +1,7 @@
 import logging
 import os
 
+import dask.bag as db
 import numpy as np
 import tiledb
 import zarr
@@ -288,7 +289,42 @@ class TDBWriter(Writer):
         i_start, _ = self._dim_inds(dim_points, other_start, other_stop, inds_offset)
         return i_start
 
-    def tile(self, other_data_models, var_name, append_dim, logfile=None):
+    def _make_tile_helper(args):
+        """Helper method to call from a `map` operation and unpack the args."""
+        self._make_tile(*args)
+
+    def _make_tile(self, other, var_name, append_dim,
+                   self_ind_stop, self_dim_stop, self_step,
+                   make_data_model, verbose):
+        """Process appending a single tile to `self`."""
+        if make_data_model:
+            other_data_model = NCDataModel(other)
+            other_data_model.classify_variables()
+            other_data_model.get_metadata()
+        else:
+            other_data_model = other
+
+        # XXX Not sure about this when called from a bag...
+        # if verbose:
+        #     fn = other_data_model.netcdf_filename
+        #     print(f'Processing {fn}...  ({i}/{len(others)})', end="\r")
+
+        other_data_var = other_data_model.variables[var_name]
+        other_dim_var = other_data_model.variables[append_dim]
+        other_dim_points = other_dim_var[:]
+
+        offsets = []
+        try:
+            offset = self._dim_offsets(
+                other_dim_points, self_ind_stop, self_dim_stop, self_step)
+            offsets = [0] * len(other_data_var.shape)
+            offsets[append_axis] = offset
+            self.append(other_data_model, var_name, append_dim, offsets=offsets)
+        except Exception as e:
+            logging.info(f'{failure[0]} - {failure[1]}')
+
+    def tile(self, other_data_models, var_name, append_dim,
+             parallel=False, verbose=False, logfile=None):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
         append operations from multiple data model objects. This is done by
@@ -300,7 +336,7 @@ class TDBWriter(Writer):
 
         """
         if logfile is not None:
-            logging.basicConfig(filename=log,
+            logging.basicConfig(filename=logfile,
                                 level=logging.DEBUG,
                                 format='%(asctime)s %(message)s',
                                 datefmt='%d/%m/%Y %H:%M:%S')
@@ -327,40 +363,20 @@ class TDBWriter(Writer):
                                                        self_dim_start,
                                                        self_dim_stop)
 
-        failed_appends = 0
-        for i, other in enumerate(others):
-            if make_data_model:
-                other_data_model = NCDataModel(other)
-                other_data_model.classify_variables()
-                other_data_model.get_metadata()
-            else:
-                other_data_model = other
+        # For multidim / multi-attr appends this will be more complex.
+        jobs = others
+        common_job_args = [var_name, append_dim,
+                            self_ind_stop, self_dim_stop, self_step,
+                            make_data_model, verbose]
+        job_args = [[other] + common_job_args for other in others]
 
-            if verbose:
-                fn = other_data_model.netcdf_filename
-                print(f'Processing {fn}...  ({i}/{len(others)})', end="\r")
-
-            other_data_var = other_data_model.variables[var_name]
-            other_dim_var = other_data_model.variables[append_dim]
-            other_dim_points = other_dim_var[:]
-
-            offsets = []
-            try:
-                offset = self._dim_offsets(
-                    other_dim_points, self_ind_stop, self_dim_stop, self_step)
-                offsets = [0] * len(self_data_var.shape)
-                offsets[append_axis] = offset
-                self.append(other_data_model, var_name, append_dim, offsets=offsets)
-            except Exception as e:
-                failed_appends += 1
-                logging.info(f'{failure[0]} - {failure[1]}')
-
-        if failed_appends:
-            if logfile is not None:
-                extra_words = f'Check logfile {logfile!r} for more details'
-            else:
-                extra_words = ''
-            print(f'Failed append operations for files. {extra_words}')
+        if parallel:
+            bag_of_jobs = db.from_sequence(job_args)
+            bag_of_jobs.map(self._make_tile_helper).compute()
+        else:
+            for i, args in enumerate(job_args):
+                # TODO reintegrate the counter.
+                self._make_tile(*args)
 
 
 class ZarrWriter(Writer):
