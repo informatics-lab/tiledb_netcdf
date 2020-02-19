@@ -289,7 +289,7 @@ class TDBWriter(Writer):
         i_start, _ = self._dim_inds(dim_points, other_start, other_stop, inds_offset)
         return i_start
 
-    def _make_tile_helper(args):
+    def _make_tile_helper(self, args):
         """Helper method to call from a `map` operation and unpack the args."""
         self._make_tile(*args)
 
@@ -321,9 +321,9 @@ class TDBWriter(Writer):
             offsets[append_axis] = offset
             self.append(other_data_model, var_name, append_dim, offsets=offsets)
         except Exception as e:
-            logging.info(f'{failure[0]} - {failure[1]}')
+            logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
-    def tile(self, other_data_models, var_name, append_dim,
+    def tile(self, others, var_name, append_dim,
              parallel=False, verbose=False, logfile=None):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
@@ -366,17 +366,17 @@ class TDBWriter(Writer):
         # For multidim / multi-attr appends this will be more complex.
         jobs = others
         common_job_args = [var_name, append_dim,
-                            self_ind_stop, self_dim_stop, self_step,
-                            make_data_model, verbose]
+                           self_ind_stop, self_dim_stop, self_step,
+                           make_data_model, verbose]
         job_args = [[other] + common_job_args for other in others]
 
         if parallel:
             bag_of_jobs = db.from_sequence(job_args)
             bag_of_jobs.map(self._make_tile_helper).compute()
         else:
+            # TODO reintegrate the counter.
             for i, args in enumerate(job_args):
-                # TODO reintegrate the counter.
-                self._make_tile(*args)
+                self._make_tile_helper(args)
 
 
 class ZarrWriter(Writer):
