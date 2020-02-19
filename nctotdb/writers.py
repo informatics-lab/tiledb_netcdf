@@ -293,9 +293,9 @@ class TDBWriter(Writer):
         """Helper method to call from a `map` operation and unpack the args."""
         self._make_tile(*args)
 
-    def _make_tile(self, other, var_name, append_dim,
+    def _make_tile(self, other, var_name, append_axis, append_dim,
                    self_ind_stop, self_dim_stop, self_step,
-                   make_data_model, verbose):
+                   make_data_model, verbose, i=None, num=None):
         """Process appending a single tile to `self`."""
         if make_data_model:
             other_data_model = NCDataModel(other)
@@ -305,9 +305,11 @@ class TDBWriter(Writer):
             other_data_model = other
 
         # XXX Not sure about this when called from a bag...
-        # if verbose:
-        #     fn = other_data_model.netcdf_filename
-        #     print(f'Processing {fn}...  ({i}/{len(others)})', end="\r")
+        if verbose and i is not None and verbose is not None:
+            fn = other_data_model.netcdf_filename
+            ct = i + 1
+            pc = 100 * (ct / num)
+            print(f'Processing {fn}...  ({ct}/{num}, {pc:0.1f}%)', end="\r")
 
         other_data_var = other_data_model.variables[var_name]
         other_dim_var = other_data_model.variables[append_dim]
@@ -323,8 +325,8 @@ class TDBWriter(Writer):
         except Exception as e:
             logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
-    def tile(self, others, var_name, append_dim,
-             parallel=False, verbose=False, logfile=None):
+    def tile(self, others, var_name, append_dim, logfile,
+             parallel=False, verbose=False):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
         append operations from multiple data model objects. This is done by
@@ -365,7 +367,7 @@ class TDBWriter(Writer):
 
         # For multidim / multi-attr appends this will be more complex.
         jobs = others
-        common_job_args = [var_name, append_dim,
+        common_job_args = [var_name, append_axis, append_dim,
                            self_ind_stop, self_dim_stop, self_step,
                            make_data_model, verbose]
         job_args = [[other] + common_job_args for other in others]
@@ -374,8 +376,8 @@ class TDBWriter(Writer):
             bag_of_jobs = db.from_sequence(job_args)
             bag_of_jobs.map(self._make_tile_helper).compute()
         else:
-            # TODO reintegrate the counter.
             for i, args in enumerate(job_args):
+                args += [i, len(job_args)]
                 self._make_tile_helper(args)
 
 
