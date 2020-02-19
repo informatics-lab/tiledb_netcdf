@@ -1,8 +1,11 @@
+import logging
 import os
 
 import numpy as np
 import tiledb
 import zarr
+
+from .data_model import NCDataModel
 
 
 class Writer(object):
@@ -210,7 +213,7 @@ class TDBWriter(Writer):
             # Populate this domain's array.
             self.populate_domain_arrays(domain_vars, group_dirname)
 
-    def append(self, other_data_model, var_name, append_dim):
+    def append(self, other_data_model, var_name, append_dim, offsets=None):
         """
         Append the data from a data variable in `other_data_model`
         by extending one dimension of that data variable in the tiledb
@@ -244,20 +247,137 @@ class TDBWriter(Writer):
 
         # Get the offset along the append dimension, assuming that self and other are
         # contiguous along this dimension.
-        with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
-            array_shape = A.nonempty_domain()
-        # We want to get the next index from the upper bound of
-        # the nonempty domain along the append axis.
-        append_dim_offset = array_shape[append_axis][1] + 1
-        offsets = [0] * len(self_data_var.shape)
-        offsets[append_axis] = append_dim_offset
+        if offsets is None:
+            with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
+                array_shape = A.nonempty_domain()
+            # We want to get the next index from the upper bound of
+            # the nonempty domain along the append axis.
+            append_dim_offset = array_shape[append_axis][1] + 1
+            offsets = [0] * len(self_data_var.shape)
+            offsets[append_axis] = append_dim_offset
 
         # Append the data from other.
         self.populate_array(var_name, other_data_var, domain_path,
                             start_index=offsets, write_meta=False)
         # Append the extra dimension points from other.
         self.populate_array(append_dim, other_dim_var, domain_path,
-                            start_index=append_dim_offset, write_meta=False)
+                            start_index=offsets[append_axis], write_meta=False)
+
+    def _dim_inds(self, dim_points, start, stop, offset=0):
+        """Convert coordinate values to index space."""
+        return [list(dim_points).index(si) + offset for si in [start, stop]]
+
+    def _dim_points(self, points):
+        """Convert a dimension variable (coordinate) points to index space."""
+        start, stop = points[0], points[-1]
+        step, = np.unique(np.diff(points))
+        return start, stop, step
+
+    def _dim_offsets(self, dim_points, self_stop_ind, self_stop, self_step):
+        """
+        Calculate the offset along a dimension given by `var_name` between self
+        and other.
+
+        """
+        other_start, other_stop, other_step = self._dim_points(dim_points)
+        assert self_step == other_step, "Step between coordinate points is not equal."
+
+        points_offset = other_start - self_stop
+        inds_offset = int(points_offset / self_step) + self_stop_ind
+
+        i_start, _ = self._dim_inds(dim_points, other_start, other_stop, inds_offset)
+        return i_start
+
+    def _make_tile_helper(self, args):
+        """Helper method to call from a `map` operation and unpack the args."""
+        self._make_tile(*args)
+
+    def _make_tile(self, other, var_name, append_axis, append_dim,
+                   self_ind_stop, self_dim_stop, self_step,
+                   make_data_model, verbose, i=None, num=None):
+        """Process appending a single tile to `self`."""
+        if make_data_model:
+            other_data_model = NCDataModel(other)
+            other_data_model.classify_variables()
+            other_data_model.get_metadata()
+        else:
+            other_data_model = other
+
+        # XXX Not sure about this when called from a bag...
+        if verbose and i is not None and verbose is not None:
+            fn = other_data_model.netcdf_filename
+            ct = i + 1
+            pc = 100 * (ct / num)
+            print(f'Processing {fn}...  ({ct}/{num}, {pc:0.1f}%)', end="\r")
+
+        other_data_var = other_data_model.variables[var_name]
+        other_dim_var = other_data_model.variables[append_dim]
+        other_dim_points = other_dim_var[:]
+
+        offsets = []
+        try:
+            offset = self._dim_offsets(
+                other_dim_points, self_ind_stop, self_dim_stop, self_step)
+            offsets = [0] * len(other_data_var.shape)
+            offsets[append_axis] = offset
+            self.append(other_data_model, var_name, append_dim, offsets=offsets)
+        except Exception as e:
+            logging.info(f'{other_data_model.netcdf_filename} - {e}')
+
+    def tile(self, others, var_name, append_dim, logfile,
+             parallel=False, verbose=False):
+        """
+        Enable multiple, possibly non-contiguous, eventually multi-axis
+        append operations from multiple data model objects. This is done by
+        working out where each tile fits relative to `self` in
+        each append dimension.
+
+        TODO support multiple axis appends.
+        TODO check if there's already data at the write inds and add an overwrite?
+
+        """
+        if logfile is not None:
+            logging.basicConfig(filename=logfile,
+                                level=logging.DEBUG,
+                                format='%(asctime)s %(message)s',
+                                datefmt='%d/%m/%Y %H:%M:%S')
+
+        make_data_model = False
+        # Check what sort of thing `others` is.
+        if isinstance(others, NCDataModel):
+            others = [others]
+        elif isinstance(others, str):
+            others = [others]
+            make_data_model = True
+        else:
+            other = others[0]
+            if isinstance(other, str):
+                make_data_model = True
+
+        append_axis, append_dim = self._append_dimension(var_name, append_dim)
+
+        self_data_var = self.data_model.variables[var_name]
+        self_dim_var = self.data_model.variables[append_dim]
+        self_dim_points = self_dim_var[:]
+        self_dim_start, self_dim_stop, self_step = self._dim_points(self_dim_points)
+        self_ind_start, self_ind_stop = self._dim_inds(self_dim_points,
+                                                       self_dim_start,
+                                                       self_dim_stop)
+
+        # For multidim / multi-attr appends this will be more complex.
+        jobs = others
+        common_job_args = [var_name, append_axis, append_dim,
+                           self_ind_stop, self_dim_stop, self_step,
+                           make_data_model, verbose]
+        job_args = [[other] + common_job_args for other in others]
+
+        if parallel:
+            bag_of_jobs = db.from_sequence(job_args)
+            bag_of_jobs.map(self._make_tile_helper).compute()
+        else:
+            for i, args in enumerate(job_args):
+                args += [i, len(job_args)]
+                self._make_tile_helper(args)
 
 
 class ZarrWriter(Writer):
