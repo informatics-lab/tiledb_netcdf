@@ -29,16 +29,16 @@ class Writer(object):
     def _append_checker(self, other_data_model, var_name, append_dim):
         """Checks to see if an append operation can go ahead."""
         # Sanity checks: is the var name in both self, other, and the tiledb?
-        assert var_name in self.data_model.data_var_names
-        assert var_name in other_data_model.data_var_names
+        assert var_name in self.data_model.data_var_names, f'Variable name {var_name!r} not found in this data model.'
+        assert var_name in other_data_model.data_var_names, f'Variable name {var_name!r} not found in other data model.'
 
         self_var = self.data_model.variables[var_name]
         other_var = other_data_model.variables[var_name]
         # And is the append dimension valid?
-        assert append_dim in self_var.dimensions
-        assert append_dim in other_var.dimensions
+        assert append_dim in self_var.dimensions, f'Dimension {append_dim!r} not found in this data model.'
+        assert append_dim in other_var.dimensions, f'Dimension {append_dim!r} not found in other data model.'
         # And are the two data vars on the same domain?
-        assert self_var.dimensions == other_var.dimensions
+        assert self_var.dimensions == other_var.dimensions, f'Data dimensions in this and other are not the same'
 
     def _append_dimension(self, var_name, append_desc):
         """Determine the name and index of the dimension for the append operation."""
@@ -322,9 +322,10 @@ class TDBWriter(Writer):
             offsets[append_axis] = offset
             self.append(other_data_model, var_name, append_dim, offsets=offsets)
         except Exception as e:
+            raise
             logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
-    def tile(self, others, var_name, append_dim, logfile,
+    def tile(self, others, var_name, append_dim, logfile=None,
              parallel=False, verbose=False):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
