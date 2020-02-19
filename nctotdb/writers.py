@@ -26,6 +26,11 @@ class Writer(object):
         else:
             self.array_name = self._array_name
 
+    def _all_coords(self, variable):
+        dim_coords = list(variable.dimensions)
+        other_coords = variable.coordinates.split(' ')
+        return dim_coords + other_coords
+
     def _append_checker(self, other_data_model, var_name, append_dim):
         """Checks to see if an append operation can go ahead."""
         # Sanity checks: is the var name in both self, other, and the tiledb?
@@ -33,12 +38,12 @@ class Writer(object):
         assert var_name in other_data_model.data_var_names, f'Variable name {var_name!r} not found in other data model.'
 
         self_var = self.data_model.variables[var_name]
+        self_var_coords = self._all_coords(self_var)
         other_var = other_data_model.variables[var_name]
+        other_var_coords = self._all_coords(other_var)
         # And is the append dimension valid?
-        assert append_dim in self_var.dimensions, f'Dimension {append_dim!r} not found in this data model.'
-        assert append_dim in other_var.dimensions, f'Dimension {append_dim!r} not found in other data model.'
-        # And are the two data vars on the same domain?
-        assert self_var.dimensions == other_var.dimensions, f'Data dimensions in this and other are not the same'
+        assert append_dim in self_var_coords, f'Dimension {append_dim!r} not found in this data model.'
+        assert append_dim in other_var_coords, f'Dimension {append_dim!r} not found in other data model.'
 
     def _append_dimension(self, var_name, append_desc):
         """Determine the name and index of the dimension for the append operation."""
@@ -133,9 +138,8 @@ class TDBWriter(Writer):
             schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False, attrs=[attr])
             tiledb.Array.create(array_filename, schema)
 
-    def _array_indices(self, data_var, start_index):
+    def _array_indices(self, shape, start_index):
         """Set the array indices to write the array data into."""
-        shape = data_var.shape
         if isinstance(start_index, int):
             start_index = [start_index] * len(shape)
 
@@ -145,7 +149,7 @@ class TDBWriter(Writer):
         return tuple(array_indices)
 
     def populate_array(self, var_name, data_var, group_dirname,
-                       start_index=0, write_meta=True):
+                       start_index=None, write_meta=True):
         """Write the contents of a netcdf data variable into a tiledb array."""
         # Get the data variable and the filename of the array to write to.
         var_name = data_var.name
@@ -154,7 +158,12 @@ class TDBWriter(Writer):
         # Write to the array.
         with tiledb.open(array_filename, 'w') as A:
             # Write netcdf data var contents into array.
-            write_indices = self._array_indices(data_var, start_index)
+            if start_index is None:
+                start_index = 0
+                shape = data_var.shape
+                write_indices = self._array_indices(shape, start_index)
+            else:
+                write_indices = start_index
             A[write_indices] = data_var[...]
 
             if write_meta:
@@ -263,9 +272,9 @@ class TDBWriter(Writer):
         self.populate_array(append_dim, other_dim_var, domain_path,
                             start_index=offsets[append_axis], write_meta=False)
 
-    def _dim_inds(self, dim_points, start, stop, offset=0):
+    def _dim_inds(self, dim_points, spatial_inds, offset=0):
         """Convert coordinate values to index space."""
-        return [list(dim_points).index(si) + offset for si in [start, stop]]
+        return [list(dim_points).index(si) + offset for si in spatial_inds]
 
     def _dim_points(self, points):
         """Convert a dimension variable (coordinate) points to index space."""
@@ -273,19 +282,24 @@ class TDBWriter(Writer):
         step, = np.unique(np.diff(points))
         return start, stop, step
 
-    def _dim_offsets(self, dim_points, self_stop_ind, self_stop, self_step):
+    def _dim_offsets(self, dim_points, self_stop_ind, self_stop, self_step, scalar=False):
         """
         Calculate the offset along a dimension given by `var_name` between self
         and other.
 
         """
-        other_start, other_stop, other_step = self._dim_points(dim_points)
-        assert self_step == other_step, "Step between coordinate points is not equal."
+        if scalar:
+            other_start = dim_points
+            spatial_inds = [other_start, other_start]  # Fill the nonexistent `stop` with a blank.
+        else:
+            other_start, other_stop, other_step = self._dim_points(dim_points)
+            assert self_step == other_step, "Step between coordinate points is not equal."
+            spatial_inds = [other_start, other_stop]
 
         points_offset = other_start - self_stop
         inds_offset = int(points_offset / self_step) + self_stop_ind
 
-        i_start, _ = self._dim_inds(dim_points, other_start, other_stop, inds_offset)
+        i_start, _ = self._dim_inds(dim_points, spatial_inds, inds_offset)
         return i_start
 
     def _make_tile_helper(self, args):
@@ -312,15 +326,26 @@ class TDBWriter(Writer):
 
         other_data_var = other_data_model.variables[var_name]
         other_dim_var = other_data_model.variables[append_dim]
-        other_dim_points = other_dim_var[:]
+        other_dim_points = np.atleast_1d(other_dim_var[:])
+
+        # Check for the dataset being scalar on the append dimension.
+        scalar_coord = False
+        if len(other_dim_points) == 1:
+            scalar_coord = True
+
+        if scalar_coord:
+            shape = [1] + list(other_data_var.shape)
+        else:
+            shape = other_data_var.shape
 
         offsets = []
         try:
             offset = self._dim_offsets(
-                other_dim_points, self_ind_stop, self_dim_stop, self_step)
-            offsets = [0] * len(other_data_var.shape)
+                other_dim_points, self_ind_stop, self_dim_stop, self_step, scalar=scalar_coord)
+            offsets = [0] * len(shape)
             offsets[append_axis] = offset
-            self.append(other_data_model, var_name, append_dim, offsets=offsets)
+            offset_inds = self._array_indices(shape, offsets)
+            self.append(other_data_model, var_name, append_dim, offsets=offset_inds)
         except Exception as e:
             raise
             logging.info(f'{other_data_model.netcdf_filename} - {e}')
@@ -360,10 +385,10 @@ class TDBWriter(Writer):
         self_data_var = self.data_model.variables[var_name]
         self_dim_var = self.data_model.variables[append_dim]
         self_dim_points = self_dim_var[:]
+        self_shape = self_data_var.shape
         self_dim_start, self_dim_stop, self_step = self._dim_points(self_dim_points)
         self_ind_start, self_ind_stop = self._dim_inds(self_dim_points,
-                                                       self_dim_start,
-                                                       self_dim_stop)
+                                                       [self_dim_start, self_dim_stop])
 
         # For multidim / multi-attr appends this will be more complex.
         jobs = others
