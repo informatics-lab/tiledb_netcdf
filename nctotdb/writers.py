@@ -1,6 +1,9 @@
+import copy
 import logging
+from multiprocessing import Pool
 import os
 
+# import dask.bag as db
 import numpy as np
 import tiledb
 import zarr
@@ -235,36 +238,7 @@ class TDBWriter(Writer):
         # Check if the append can go ahead.
         self._append_checker(other_data_model, var_name, append_dim)
 
-        # Get data vars from self and other.
-        self_data_var = self.data_model.variables[var_name]
-        other_data_var = other_data_model.variables[var_name]
-
-        # Get domain for var_name and tiledb array path.
-        domain = self.data_model.varname_domain_mapping[var_name]
-        domain_name = self._public_domain_name(domain)
-        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
-
-        # Get the index and name of the append dimension.
-        append_axis, append_dim = self._append_dimension(var_name, append_dim)
-        other_dim_var = other_data_model.variables[append_dim]
-
-        # Get the offset along the append dimension, assuming that self and other are
-        # contiguous along this dimension.
-        if offsets is None:
-            with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
-                array_shape = A.nonempty_domain()
-            # We want to get the next index from the upper bound of
-            # the nonempty domain along the append axis.
-            append_dim_offset = array_shape[append_axis][1] + 1
-            offsets = [0] * len(self_data_var.shape)
-            offsets[append_axis] = append_dim_offset
-
-        # Append the data from other.
-        self.populate_array(var_name, other_data_var, domain_path,
-                            start_index=offsets, write_meta=False)
-        # Append the extra dimension points from other.
-        self.populate_array(append_dim, other_dim_var, domain_path,
-                            start_index=offsets[append_axis], write_meta=False)
+        append(other_data_model, var_name, append_dim, offsets=None)
 
 
 class ZarrWriter(Writer):
@@ -363,9 +337,13 @@ class ZarrWriter(Writer):
         other_dim = other_data_model.variables[append_dim]
         getattr(self.group, append_dim).append(other_dim[...], axis=0)
 
-
-# Remove these functions from `TDBWriter` because most of them are static and it
-# might make parallel tiles possible!
+        
+###################################################################################
+#                                                                                 #
+# Remove these functions from `TDBWriter` because most of them are static and it  #
+# might make tiling in parallel possible!                                         #
+#                                                                                 #
+###################################################################################
 
 def _array_indices(shape, start_index):
     """Set the array indices to write the array data into."""
@@ -461,6 +439,52 @@ def _make_tile(writer, other, var_name, append_axis, append_dim,
         logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
 
+def append(other_data_model, var_name, append_dim, offsets=None):
+    """
+    Append the data from a data variable in `other_data_model`
+    by extending one dimension of that data variable in the tiledb
+    described by `self`.
+
+    Notes:
+      * extends one dimension only on a single data variable
+      * cannot create new dimensions, only extend existing dimensions
+    
+    Assumptions:
+      * for now, that the data in other directly follows on from the
+        data in self, so that there are no gaps or overlaps in the
+        appended data
+
+    """
+    other_data_var = other_data_model.variables[var_name]
+    
+    # Get domain for var_name and tiledb array path.
+    domain = other_data_model.varname_domain_mapping[var_name]
+    domain_index = f'domain_{other_data_model.domains.index(domain)}'
+    domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
+    
+    # Get the index and name of the append dimension.
+    append_axis, append_dim = self._append_dimension(var_name, append_dim)
+    other_dim_var = other_data_model.variables[append_dim]
+    
+    # Get the offset along the append dimension, assuming that self and other are
+    # contiguous along this dimension.
+    if offsets is None:
+        with tiledb.open(os.path.join(domain_path, var_name), 'r') as A:
+            array_shape = A.nonempty_domain()
+        # We want to get the next index from the upper bound of
+        # the nonempty domain along the append axis.
+        append_dim_offset = array_shape[append_axis][1] + 1
+        offsets = [0] * len(self_data_var.shape)
+        offsets[append_axis] = append_dim_offset
+    
+    # Append the data from other.
+    self.populate_array(var_name, other_data_var, domain_path,
+                        start_index=offsets, write_meta=False)
+    # Append the extra dimension points from other.
+    self.populate_array(append_dim, other_dim_var, domain_path,
+                       start_index=offsets[append_axis], write_meta=False)
+        
+
 def tile(writer, others, var_name, append_dim,
          logfile=None, parallel=False, verbose=False):
     """
@@ -493,24 +517,24 @@ def tile(writer, others, var_name, append_dim,
 
     append_axis, append_dim = writer._append_dimension(var_name, append_dim)
 
-    self_data_var = writer.data_model.variables[var_name]
     self_dim_var = writer.data_model.variables[append_dim]
-    self_dim_points = self_dim_var[:]
-    self_shape = self_data_var.shape
+    self_dim_points = copy.copy(self_dim_var[:])
     self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
     self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
                                               [self_dim_start, self_dim_stop])
 
     # For multidim / multi-attr appends this will be more complex.
     jobs = others
-    common_job_args = [var_name, append_axis, append_dim,
-                        self_ind_stop, self_dim_stop, self_step,
-                        make_data_model, verbose]
+    common_job_args = [writer, var_name, append_axis, append_dim,
+                       self_ind_stop, self_dim_stop, self_step,
+                       make_data_model, verbose]
     job_args = [[other] + common_job_args for other in others]
 
     if parallel:
-        bag_of_jobs = db.from_sequence(job_args)
-        bag_of_jobs.map(_make_tile_helper).compute()
+#         bag_of_jobs = db.from_sequence(job_args)
+#         bag_of_jobs.map(_make_tile_helper).compute()
+        with Pool(5) as p:
+            p.map(_make_tile_helper, job_args)
     else:
         for i, args in enumerate(job_args):
             args += [i, len(job_args)]
