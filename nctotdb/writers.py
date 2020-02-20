@@ -1,3 +1,4 @@
+import itertools
 import logging
 import os
 
@@ -222,7 +223,8 @@ class TDBWriter(Writer):
             # Populate this domain's array.
             self.populate_domain_arrays(domain_vars, group_dirname)
 
-    def append(self, other_data_model, var_name, append_dim, offsets=None):
+    def append(self, other_data_model, var_name, append_dim,
+               offsets=None, write_dim=True):
         """
         Append the data from a data variable in `other_data_model`
         by extending one dimension of that data variable in the tiledb
@@ -268,9 +270,11 @@ class TDBWriter(Writer):
         # Append the data from other.
         self.populate_array(var_name, other_data_var, domain_path,
                             start_index=offsets, write_meta=False)
-        # Append the extra dimension points from other.
-        self.populate_array(append_dim, other_dim_var, domain_path,
-                            start_index=offsets[append_axis], write_meta=False)
+        if write_dim:
+            # Append the extra dimension points from other.
+            self.populate_array(append_dim, other_dim_var, domain_path,
+                                start_index=offsets[append_axis],
+                                write_meta=False)
 
     def _dim_inds(self, dim_points, spatial_inds, offset=0):
         """Convert coordinate values to index space."""
@@ -308,7 +312,7 @@ class TDBWriter(Writer):
 
     def _make_tile(self, other, var_name, append_axis, append_dim,
                    self_ind_stop, self_dim_stop, self_step,
-                   make_data_model, verbose, i=None, num=None):
+                   make_data_model, verbose, write_dim=True, i=None, num=None):
         """Process appending a single tile to `self`."""
         if make_data_model:
             other_data_model = NCDataModel(other)
@@ -345,12 +349,12 @@ class TDBWriter(Writer):
             offsets = [0] * len(shape)
             offsets[append_axis] = offset
             offset_inds = self._array_indices(shape, offsets)
-            self.append(other_data_model, var_name, append_dim, offsets=offset_inds)
+            self.append(other_data_model, var_name, append_dim,
+                        offsets=offset_inds, write_dim=write_dim)
         except Exception as e:
-            raise
             logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
-    def tile(self, others, var_name, append_dim, logfile=None,
+    def tile(self, others, var_names, append_dim, logfile=None,
              parallel=False, verbose=False):
         """
         Enable multiple, possibly non-contiguous, eventually multi-axis
@@ -380,6 +384,10 @@ class TDBWriter(Writer):
             if isinstance(other, str):
                 make_data_model = True
 
+        # Check what kind of thing var_names is.
+        if isinstance(var_names, str):
+            var_names = [var_names]
+
         append_axis, append_dim = self._append_dimension(var_name, append_dim)
 
         self_data_var = self.data_model.variables[var_name]
@@ -391,11 +399,20 @@ class TDBWriter(Writer):
                                                        [self_dim_start, self_dim_stop])
 
         # For multidim / multi-attr appends this will be more complex.
-        jobs = others
-        common_job_args = [var_name, append_axis, append_dim,
-                           self_ind_stop, self_dim_stop, self_step,
-                           make_data_model, verbose]
-        job_args = [[other] + common_job_args for other in others]
+        if len(var_names) == 1:
+            common_job_args = [var_name, append_axis, append_dim,
+                               self_ind_stop, self_dim_stop, self_step,
+                               make_data_model, verbose]
+            job_args = [[other] + common_job_args for other in others]
+        else:
+            first_var_name = var_names[0]
+            jobs = itertools.product(others, var_names)
+            job_args = []
+            for (other, var_name) in jobs:
+                write_dim = var_name == first_var_name
+                job_args.append([var_name, append_axis, append_dim,
+                                 self_ind_stop, self_dim_stop, self_step,
+                                 make_data_model, verbose, write_dim])
 
         if parallel:
             bag_of_jobs = db.from_sequence(job_args)
