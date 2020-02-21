@@ -1,3 +1,4 @@
+from collections import defaultdict
 import copy
 import logging
 import os
@@ -277,6 +278,143 @@ class TDBWriter(Writer):
             tiledb.consolidate(os.path.join(domain_path, var_name), ctx=ctx)
 
 
+class MultiAttrTDBWriter(TDBWriter):
+    """
+    Provides a class to write Python objects loaded from NetCDF to TileDB.
+
+    Data Model: an instance of `NCDataModel` supplying data from a NetCDF file.
+    Filepath: the filepath to save the tiledb array at.
+
+    """
+    def __init__(self, data_model, array_filepath,
+                 array_name=None, unlimited_dims=None):
+        super().__init__(data_model, array_filepath, array_name, unlimited_dims)
+
+        self.domains_mapping = None
+
+    def _public_domain_name(self, dimensions, separator):
+        """
+        A common method for determining the domain name for a given data variable,
+        based on its dimensions.
+
+        """
+        return separator.join(dimensions)
+
+    def _get_attributes(self, data_var):
+        metadata = {}
+        for ncattr in data_var.ncattrs():
+            metadata[ncattr] = data_var.getncattr(ncattr)
+        return metadata
+
+    def _multi_attr_metadata(self, data_var_names):
+        if len(data_var_names) == 1:
+            data_var = self.data_model.variables[data_var_names[0]]
+            metadata = self._get_attributes(data_var)
+        else:
+            metadata = {}
+            for var_name in data_var_names:
+                data_var = self.data_model.variables[var_name]
+                data_var_meta = self._get_attributes(data_var)
+                # XXX TileDB does not support dict in array metadata...
+                for key, value in data_var_meta:
+                    metadata[f'{key}__{var_name}'] = value
+        return metadata
+
+    def _make_shape_domains(self, domain_separator):
+        """
+        Make one domain for each unique combination of shape and dimension variables.
+
+        We need to make this set of domains for the multi-attr case as a limitation
+        in TileDB means that all attrs in an array must be written at the same time,
+        which also means the indexing for all attrs to be written must be the same.
+
+        """
+        shape_domains = []
+        for data_var_name in self.data_model.data_var_names:
+            domain_string = self._public_domain_name(self.data_model.variables[data_var_name],
+                                                     domain_separator)
+            shape_domains.append((domain_string, data_var_name))
+
+        domains_mapping = defaultdict(list)
+        for domain, data_var_name in shape_domains:
+            domains_mapping[domain].append(data_var_name)
+        self.domains_mapping = domains_mapping
+
+    def populate_multiattr_array(self, data_array_name, data_var_names, group_dirname,
+                                 start_index=None, write_meta=True):
+        """Write the contents of multiple data variables into a multi-attr TileDB array."""
+        array_filename = os.path.join(group_dirname, data_array_name)
+
+        # Write to the array.
+        data_vars = [self.data_model.variables[name] for name in data_var_names]
+        write_multiattr_array(array_filename, data_vars, start_index=start_index)
+        if write_meta:
+            multi_attr_metadata = self._multi_attr_metadata(data_var_names)
+            with tiledb.open(array_filename, 'w') as A:
+                # Set tiledb metadata from data var ncattrs.
+                for key, value in multi_attr_metadata.items():
+                    A.meta[key] = value
+                # A data var gets a `data_var` key in the metadata dictionary,
+                # value being all the dim coords that describe it.
+                A.meta['dataset'] = var_name
+                # XXX: can't add list or tuple as values to metadata dictionary...
+                # Define this as being a multi-attr array.
+                A.meta['attrs_names'] = ','.join(data_var_names)
+                dim_coord_names = self.data_model.variables[var_name].dimensions
+                A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
+
+    def create_multiattr_array(self, domain_var_names, domain_dims,
+                               group_dirname, data_array_name):
+        """Create one multi-attr TileDB array with an attr for each data variable."""
+        # Create dimensions and domain for the multi-attr array.
+        array_dims = [self._create_tdb_dim(dim_name, coords=False) for dim_name in domain_dims]
+        tdb_domain = tiledb.Domain(*array_dims)
+
+        # Set up the multiple attrs for the array.
+        attrs = []
+        for var_name in domain_var_names:
+            dtype = self.data_model.variables[var_name].dtype
+            attr = tiledb.Attr(name=var_name, dtype=dtype)
+            attrs.append(attr)
+
+        # Create the URI for the array.
+        array_filename = os.path.join(group_dirname, data_array_name)
+        # Create an empty array.
+        schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False, attrs=attrs)
+        tiledb.Array.create(array_filename, schema)
+
+    def create_domains(self, data_array_name='data', domain_sep=','):
+        """
+        Create one TileDB domain for each unique shape / dimensions combination
+        in the input Data Model. Each domain will contain:
+          * one multi-attr array, where the attrs are all the data variables described
+            by this combination of dimensions, and
+          * one array for each of the dimension-describing coordinates for this
+            combination of dimensions.
+
+        """
+        self._make_shape_domains(domain_sep)
+        
+        for domain_name, domain_var_names in domains:
+            domain_coord_names = domain_name.split(domain_sep)
+
+            # Create group.
+            group_dirname = os.path.join(self.array_filepath, self.array_name, domain_name)
+            # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
+            self._create_tdb_directory(group_dirname)
+            # TODO it would be good to write the domain's dim names into the group meta.
+            tiledb.group_create(group_dirname)
+
+            # Create and write arrays for each domain-describing coordinate.
+            self.create_domain_arrays(domain_coord_names, group_dirname, coords=True)
+            self.populate_domain_arrays(domain_coord_names, group_dirname)
+
+            # Get data vars in this domain and create and populate a multi-attr array.
+            self.create_multiattr_array(domain_var_names, domain_coord_names,
+                                        group_dirname, data_array_name)
+            self.populate_multiattr_array(data_array_name, domain_var_names, group_dirname)
+
+
 class ZarrWriter(Writer):
     """Provides a class to write Python objects loaded from NetCDF to zarr."""
     def __init__(self, data_model, array_filepath, array_name=None):
@@ -395,15 +533,30 @@ def _array_indices(shape, start_index):
 
 def write_array(array_filename, data_var, start_index=None):
     """Write to the array."""
+    if start_index is None:
+        start_index = 0
+        shape = data_var.shape
+        write_indices = _array_indices(shape, start_index)
+    else:
+        write_indices = start_index
+
+    # Write netcdf data var contents into array.
     with tiledb.open(array_filename, 'w') as A:
-        # Write netcdf data var contents into array.
-        if start_index is None:
-            start_index = 0
-            shape = data_var.shape
-            write_indices = _array_indices(shape, start_index)
-        else:
-            write_indices = start_index
         A[write_indices] = data_var[...]
+
+
+def write_multiattr_array(array_filename, data_vars, start_index=None):
+    """Write to each attr in the array."""
+    if start_index is None:
+        start_index = 0
+        shape = data_var.shape
+        write_indices = _array_indices(shape, start_index)
+    else:
+        write_indices = start_index
+
+    # Write netcdf data var contents into array.
+    with tiledb.open(array_filename, 'w') as A:
+        A[write_indices] = {data_var.name: data_var[...] for data_var in data_vars}
 
 
 def _dim_inds(dim_points, spatial_inds, offset=0):
@@ -498,4 +651,3 @@ def _make_tile(other, var_name, domain_path, append_axis, append_dim,
     # Append the extra dimension points from other.
     dim_array_path = os.path.join(domain_path, append_dim)
     write_array(dim_array_path, other_dim_var, start_index=offset_inds[append_axis])
-    
