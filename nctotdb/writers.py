@@ -160,9 +160,11 @@ class TDBWriter(Writer):
                     A.meta[ncattr] = data_var.getncattr(ncattr)
                 # Add metadata describing whether this is a coord or data var.
                 if var_name in self.data_model.data_var_names:
-                    # A data var gets a `data_var` key in the metadata dictionary,
-                    # value being all the dim coords that describe it.
+                    # A data array gets a `dataset` key in the metadata dictionary,
+                    # which defines all the data variables in it.
                     A.meta['dataset'] = var_name
+                    # Define this as not being a multi-attr array.
+                    A.meta['multiattr'] = False
                     # XXX: can't add list or tuple as values to metadata dictionary...
                     dim_coord_names = self.data_model.variables[var_name].dimensions
                     A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
@@ -316,7 +318,7 @@ class MultiAttrTDBWriter(TDBWriter):
                 data_var = self.data_model.variables[var_name]
                 data_var_meta = self._get_attributes(data_var)
                 # XXX TileDB does not support dict in array metadata...
-                for key, value in data_var_meta:
+                for key, value in data_var_meta.items():
                     metadata[f'{key}__{var_name}'] = value
         return metadata
 
@@ -331,8 +333,8 @@ class MultiAttrTDBWriter(TDBWriter):
         """
         shape_domains = []
         for data_var_name in self.data_model.data_var_names:
-            domain_string = self._public_domain_name(self.data_model.variables[data_var_name],
-                                                     domain_separator)
+            dimensions = self.data_model.variables[data_var_name].dimensions
+            domain_string = self._public_domain_name(dimensions, domain_separator)
             shape_domains.append((domain_string, data_var_name))
 
         domains_mapping = defaultdict(list)
@@ -354,13 +356,13 @@ class MultiAttrTDBWriter(TDBWriter):
                 # Set tiledb metadata from data var ncattrs.
                 for key, value in multi_attr_metadata.items():
                     A.meta[key] = value
-                # A data var gets a `data_var` key in the metadata dictionary,
-                # value being all the dim coords that describe it.
-                A.meta['dataset'] = var_name
-                # XXX: can't add list or tuple as values to metadata dictionary...
+                # A data array gets a `dataset` key in the metadata dictionary,
+                # which defines all the data variables in it.
+                A.meta['dataset'] = ','.join(data_var_names)
                 # Define this as being a multi-attr array.
-                A.meta['attrs_names'] = ','.join(data_var_names)
-                dim_coord_names = self.data_model.variables[var_name].dimensions
+                A.meta['multiattr'] = True
+                # XXX: can't add list or tuple as values to metadata dictionary...
+                dim_coord_names = self.data_model.variables[data_var_names[0]].dimensions
                 A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
 
     def create_multiattr_array(self, domain_var_names, domain_dims,
@@ -395,7 +397,7 @@ class MultiAttrTDBWriter(TDBWriter):
         """
         self._make_shape_domains(domain_sep)
         
-        for domain_name, domain_var_names in domains:
+        for domain_name, domain_var_names in self.domains_mapping.items():
             domain_coord_names = domain_name.split(domain_sep)
 
             # Create group.
@@ -549,7 +551,7 @@ def write_multiattr_array(array_filename, data_vars, start_index=None):
     """Write to each attr in the array."""
     if start_index is None:
         start_index = 0
-        shape = data_var.shape
+        shape = data_vars[0].shape  # All data vars *must* have the same shape for writing...
         write_indices = _array_indices(shape, start_index)
     else:
         write_indices = start_index
