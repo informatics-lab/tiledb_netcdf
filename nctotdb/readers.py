@@ -239,10 +239,11 @@ class TDBReader(Reader):
         allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS)
         return {k: attrs[k] for k in allowed_keys}
 
-    def _from_tdb_array(self, array_path, naming_key, to_dask=False):
+    def _from_tdb_array(self, array_path, naming_key, array_name=None, to_dask=False):
         with tiledb.open(array_path, 'r') as A:
             metadata = {k: v for k, v in A.meta.items()}
-            array_name = metadata[naming_key]
+            if array_name is None:
+                array_name = metadata[naming_key]
             array_inds = self._array_shape(A.nonempty_domain())
             # This may well not maintain lazy data...
             if to_dask:
@@ -293,7 +294,8 @@ class TDBReader(Reader):
             group_dims[name] = coord
         return group_dims
 
-    def _load_data(self, array_path, group_dims, attr_name=None):
+    def _load_data(self, array_path, group_dims,
+                   attr_name=None, separator='__'):
         """
         Create an Iris cube from a TileDB array describing a data variable and
         pre-loaded dimension-describing coordinates.
@@ -303,23 +305,27 @@ class TDBReader(Reader):
         """
         single_attr_name = 'dataset'
         if attr_name is None:
-            attr_name = single_attr_name
-        attr_metadata, lazy_data = self._from_tdb_array(array_path, single_attr_name, to_dask=True)
-
-        # Handle multi-attr metadata differences.
-        if attr_name == single_attr_name:
+            attr_metadata, lazy_data = self._from_tdb_array(array_path, single_attr_name, to_dask=True)
             metadata = attr_metadata
             attr_name = metadata.pop(single_attr_name)
         else:
+            attr_metadata, lazy_data = self._from_tdb_array(array_path,
+                                                            single_attr_name,
+                                                            array_name=attr_name,
+                                                            to_dask=True)
             metadata = {}
-            for key, value in attr_metadata:
-                # Key is like `attrname_keyname`.
-                if key.startswith(attr_name):
-                    cutoff_ind = len(attr_name) + 1
-                    new_key = key[cutoff_ind:]
-                    metadata[new_key] = value
+            for key, value in attr_metadata.items():
+                # Varname-specific keys are of form `keyname__attrname`; we only want `keyname`.
+                # TODO pass the separator character to the method.
+                try:
+                    key_name, key_attr = key.split(separator)
+                    if key_attr == attr_name:
+                        metadata[key_name] = value
+                except ValueError:
+                    # Not all keys are varname-specific; we want all of these.
+                    metadata[key] = value
 
-        cell_methods = parse_cell_methods(metadata.pop('cell_methods'))
+        cell_methods = parse_cell_methods(metadata.pop('cell_methods', None))
         dim_names = metadata.pop('dimensions').split(',')
         # Dim Coords And Dims (mapping of coords to cube axes).
         dcad = [(group_dims[name], i) for i, name in enumerate(dim_names)]
@@ -347,7 +353,7 @@ class TDBReader(Reader):
         cubes = []
         for data_path in data_paths:
             with tiledb.open(data_path, 'r') as A:
-                attr_names = A.meta['attrs_names'].split(',')
+                attr_names = A.meta['dataset'].split(',')
             for attr_name in attr_names:
                 cube = self._load_data(data_path, group_dims, attr_name=attr_name)
                 cubes.append(cube)
