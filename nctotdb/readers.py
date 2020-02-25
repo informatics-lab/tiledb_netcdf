@@ -85,6 +85,12 @@ class TDBReader(Reader):
         if not len(self.groups.keys()):
             self.get_groups_and_arrays()
 
+    def _get_array_attrs(self, array_path):
+        with tiledb.open(array_path, "r") as A:
+            nattr = A.schema.nattr
+            attr_names = [A.schema.attr(i).name for i in range(nattr)]
+        return attr_names
+
     def _array_paths(self):
         """Produce a mapping of array name to array path irrespective of groups."""
         self.check_groups()
@@ -92,8 +98,13 @@ class TDBReader(Reader):
         arrays = {}
         for path in all_paths:
             _, array_name = os.path.split(path)
-            # XXX assumes that we will not have duplicated array names.
-            arrays[array_name] = path
+            if array_name == self.data_array_name:
+                attr_names = self._get_array_attrs(path)
+                for attr_name in attr_names:
+                    arrays[attr_name] = path
+            else:
+                # XXX assumes that we will not have duplicated array names.
+                arrays[array_name] = path
         self.arrays = arrays
 
     def classifier(self, item_path, item_type):
