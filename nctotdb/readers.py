@@ -228,15 +228,21 @@ class TDBReader(Reader):
         slices = [slice(start, stop+1, 1) for (start, stop) in nonempty_domain]
         return tuple(slices)  # Can only index with tuple, not list.
 
-    def _handle_attributes(self, attrs):
+    def _handle_attributes(self, attrs, exclude_keys=None):
         """
         Iris contains a list of attributes that may not be written to a cube/coord's
         attributes dictionary. If any of thes attributes are present in a
         TileDB array's `meta`, remove them.
 
+        Optionally also remove extra spurious keys defined with `exclude_keys` - such as
+        dictionary items set by the writer (including `dataset` and `dimensions`.)
+
         """
         attrs_keys = set(attrs.keys())
-        allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS)
+        if exclude_keys is not None:
+            allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS - set(exclude_keys))
+        else:
+            allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS)
         return {k: attrs[k] for k in allowed_keys}
 
     def _from_tdb_array(self, array_path, naming_key, array_name=None, to_dask=False):
@@ -329,13 +335,19 @@ class TDBReader(Reader):
         dim_names = metadata.pop('dimensions').split(',')
         # Dim Coords And Dims (mapping of coords to cube axes).
         dcad = [(group_dims[name], i) for i, name in enumerate(dim_names)]
-        safe_attrs = self._handle_attributes(metadata)
+        safe_attrs = self._handle_attributes(metadata,
+                                             exclude_keys=['dataset', 'multiattr'])
+        std_name = metadata.pop('standard_name', None)
+        long_name = metadata.pop('long_name', None)
+        var_name = metadata.pop('var_name', None)
+        if all(itm is None for itm in [std_name, long_name, var_name]):
+            long_name = attr_name
 
         return Cube(lazy_data,
-                    standard_name=metadata.pop('standard_name', None),
-                    long_name=metadata.pop('long_name', None),
-                    var_name=metadata.pop('var_name', None),
-                    units=metadata.pop('units', None),
+                    standard_name=std_name,
+                    long_name=long_name,
+                    var_name=var_name,
+                    units=metadata.pop('units', '1'),
                     dim_coords_and_dims=dcad,
                     cell_methods=cell_methods,
                     attributes=safe_attrs)
