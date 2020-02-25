@@ -202,14 +202,9 @@ class TDBReader(Reader):
         array name passed to `self` at instantiation.
 
         """
-        if self.data_array_name is not None:
-            # Multi-attr arrays case.
-            named_array_path = None
-            raise NotImplementedError('Cannot currently extract from a multi-attr array.')
-        else:
-            # Sanity check the requested array name is in this TileDB.
-            assert array_name in self.arrays.keys()
-            named_array_path = self.arrays[array_name]
+        # Sanity check the requested array name is in this TileDB.
+        assert array_name in self.arrays.keys()
+        named_array_path = self.arrays[array_name]
 
         named_group_path, _ = os.path.split(named_array_path)
         named_group_arrays = self.groups[named_group_path]
@@ -371,12 +366,16 @@ class TDBReader(Reader):
             cubes.append(cube)
         return cubes
 
-    def _load_multiattr_arrays(self, data_paths, group_dims):
+    def _load_multiattr_arrays(self, data_paths, group_dims, attr_names=None):
         """Load all data-describing (cube) attrs from a multi-attr array."""
+        if isinstance(attr_names, str):
+            attr_names = [attr_names]
+
         cubes = []
         for data_path in data_paths:
-            with tiledb.open(data_path, 'r') as A:
-                attr_names = A.meta['dataset'].split(',')
+            if attr_names is None:
+                with tiledb.open(data_path, 'r') as A:
+                    attr_names = A.meta['dataset'].split(',')
             for attr_name in attr_names:
                 cube = self._load_data(data_path, group_dims, attr_name=attr_name)
                 cubes.append(cube)
@@ -412,16 +411,10 @@ class TDBReader(Reader):
         Convert all arrays in a TileDB into one or more Iris cubes.
 
         """
-        # Loop through groups in the TileDB:
-        # In each group, make an Iris coordinate of each of the coord arrays in the group,
-        # pulling metadata out of the coord array's meta,
-        # and a coords and dims mapping of [axis, coordinate name].
-        # Make a cube for each data array, wrapping the TileDB array values in dask,
-        # adding the appropriate coords and dims mapping, and pulling metadata out of the
-        # data array's meta (note that cell methods and STASH will be special cases).
-        # Add all discrete cubes to a cubelist and return.
         self.check_groups()
 
+        # XXX will only return the first match if more than one cube matching `name`
+        # is found.
         if name is not None:
             # Extract a named dataset as a single Iris cube.
             named_array_path, named_array_dims = self._extract(name)
@@ -435,7 +428,8 @@ class TDBReader(Reader):
             dim_paths, data_paths = self._get_arrays_and_dims(group_array_paths)
             group_coords = self._load_group_dims(dim_paths)
             if self.data_array_name is not None:
-                group_cubes = self._load_multiattr_arrays(data_paths, group_coords)
+                group_cubes = self._load_multiattr_arrays(data_paths, group_coords,
+                                                          attr_names=name)
             else:
                 group_cubes = self._load_group_arrays(data_paths, group_coords)
             cubes.extend(group_cubes)
