@@ -333,13 +333,6 @@ class MultiAttrTDBWriter(TDBWriter):
                     metadata[f'{key}__{var_name}'] = value
         return metadata
 
-    def _get_array_attrs(self, array_path):
-        # Duplicated from `readers.TDBReader`.
-        with tiledb.open(array_path, "r") as A:
-            nattr = A.schema.nattr
-            attr_names = [A.schema.attr(i).name for i in range(nattr)]
-        return attr_names
-
     def _make_shape_domains(self):
         """
         Make one domain for each unique combination of shape and dimension variables.
@@ -434,19 +427,29 @@ class MultiAttrTDBWriter(TDBWriter):
                                         group_dirname, data_array_name)
             self.populate_multiattr_array(data_array_name, domain_var_names, group_dirname)
 
-    def _make_tile_helper(self, args):
+    def _make_tile_helper(self, args, kwargs):
         other, domain_names, data_array_name, append_dim, *other_args = args
+        verbose = False
+        if kwargs is not None:
+            verbose = True
+            job_no = kwargs['job_no'] + 1
+            n_jobs = kwargs['n_jobs']
+            n_domains = len(domain_names)
 
         other_data_model = NCDataModel(other)
         other_data_model.classify_variables()
         other_data_model.get_metadata()
 
-        for domain_name in domain_names:
+        for n, domain_name in enumerate(domain_names):
+            if verbose:
+                fn = other_data_model.netcdf_filename
+                print(f'Processing {fn}...  ({job_no}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
+
             append_axis = domain_name.split(self.domain_separator).index(append_dim)
             domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
-            array_var_names = self._get_array_attrs(os.path.join(domain_path, data_array_name))
+            array_var_names = self.domains_mapping[domain_name]
             _make_multiattr_tile(other_data_model, domain_path, data_array_name,
-                                 array_var_names, *other_args)
+                                 array_var_names, append_axis, append_dim, *other_args)
 
     def append(self, others, append_dim, data_array_name,
               logfile=None, parallel=False, verbose=False):
@@ -498,8 +501,10 @@ class MultiAttrTDBWriter(TDBWriter):
             raise NotImplementedError
         else:
             for i, args in enumerate(job_args):
-                # args += [i, len(job_args)]
-                self._make_tile_helper(args)
+                kwargs = None
+                if verbose:
+                    kwargs = {'job_no': i, 'n_jobs': len(job_args)}
+                self._make_tile_helper(args, kwargs)
 
         if len(others) > 10:
             # Consolidate at the end of the append operations to make the resultant
@@ -706,6 +711,7 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
                          self_ind_stop, self_dim_stop, self_step):
     """Process appending a single tile to `self`, per domain."""
     other_data_vars = [other_data_model.variables[var_name] for var_name in var_names]
+    data_var_shape  = other_data_vars[0].shape
     other_dim_var = other_data_model.variables[append_dim]
     other_dim_points = np.atleast_1d(other_dim_var[:])
 
@@ -715,9 +721,9 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         scalar_coord = True
 
     if scalar_coord:
-        shape = [1] + list(other_data_var.shape)
+        shape = [1] + list(data_var_shape)
     else:
-        shape = other_data_var.shape
+        shape = data_var_shape
 
     offsets = []
     try:
