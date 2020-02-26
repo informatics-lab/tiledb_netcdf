@@ -406,7 +406,7 @@ class MultiAttrTDBWriter(TDBWriter):
             combination of dimensions.
 
         """
-        self._make_shape_domains(self.domain_separator)
+        self._make_shape_domains()
         
         for domain_name, domain_var_names in self.domains_mapping.items():
             domain_coord_names = domain_name.split(self.domain_separator)
