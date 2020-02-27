@@ -511,7 +511,13 @@ class MultiAttrTDBWriter(TDBWriter):
             # array more performant.
             config = tiledb.Config({"sm.consolidation.steps": 1000})
             ctx = tiledb.Ctx(config)
-            tiledb.consolidate(os.path.join(domain_path, var_name), ctx=ctx)
+            for i, domain_name in enumerate(domain_names):
+                if verbose:
+                    print()  # Clear last carriage-returned print statement.
+                    print(f'Consolidating array: {i}/{len(domain_names)}', end='\r')
+                array_path = os.path.join(self.array_filepath, self.array_name,
+                                          domain_name, data_array_name)
+                tiledb.consolidate(array_path, ctx=ctx)
 
 
 class ZarrWriter(Writer):
