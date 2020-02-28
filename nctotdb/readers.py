@@ -33,6 +33,36 @@ IRIS_FORBIDDEN_KEYS = set([
         "_FillValue",
     ])
 
+
+# Inspired by https://github.com/SciTools/iris/blob/master/lib/iris/fileformats/netcdf.py#L418.
+class TileDBDataProxy:
+    """A proxy to the data of a single TileDB array attribute."""
+
+    __slots__ = ("shape", "dtype", "path", "var_name", "fill_value")
+
+    def __init__(self, shape, dtype, path, var_name):
+        self.shape = shape
+        self.dtype = dtype
+        self.path = path
+        self.var_name = var_name
+
+    @property
+    def ndim(self):
+        return len(self.shape)
+
+    def __getitem__(self, keys):
+        with tiledb.open(self.path, 'r') as A:
+            data = A[keys][self.attr_name]
+        return data
+
+    def __getstate__(self):
+        return {attr: getattr(self, attr) for attr in self.__slots__}
+
+    def __setstate__(self, state):
+        for key, value in state.items():
+            setattr(self, key, value)
+
+
 class Reader(object):
     """
     Abstract reader class that defines the API.
@@ -259,13 +289,11 @@ class TDBReader(Reader):
             array_inds = self._array_shape(A.nonempty_domain())
             # This may well not maintain lazy data...
             if to_dask:
-                # Borrowed from:
-                # https://github.com/dask/dask/blob/master/dask/array/tiledb_io.py#L4-L6
                 schema = A.schema
+                dtype = schema.attr(array_name).dtype
                 chunks = [schema.domain.dim(i).tile for i in range(schema.ndim)]
-                points = da.from_array(A[array_inds][array_name],
-                                       chunks,
-                                       name=naming_key)
+                proxy = TileDBDataProxy(array_inds, dtype, array_path, array_name)
+                points = da.from_array(proxy, chunks, name=naming_key)
             else:
                 points = A[array_inds][array_name]
         return metadata, points
