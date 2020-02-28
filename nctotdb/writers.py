@@ -97,6 +97,17 @@ class Writer(object):
             if verbose:
                 print(f'No missing points in {coord_array_name!r}, nothing to do.')
 
+    def _consolidate(self, var_name, domain_path, iterations=1000):
+        """
+        Consolidating an array at the end of a number of write operations
+        (for example, after a number of append operations) can help to make
+        the resultant array more performant.
+
+        """
+        config = tiledb.Config({"sm.consolidation.steps": iterations})
+        ctx = tiledb.Ctx(config)
+        tiledb.consolidate(os.path.join(domain_path, var_name), ctx=ctx)
+
 
 class TDBWriter(Writer):
     """
@@ -311,11 +322,21 @@ class TDBWriter(Writer):
                 _make_tile_helper(args)
 
         if len(others) > 10:
-            # Consolidate at the end of the append operations to make the resultant
-            # array more performant.
-            config = tiledb.Config({"sm.consolidation.steps": 1000})
-            ctx = tiledb.Ctx(config)
-            tiledb.consolidate(os.path.join(domain_path, var_name), ctx=ctx)
+            self.consolidate(var_name)
+
+    def consolidate(self, var_name, iterations=1000):
+        """
+        Consolidating an array at the end of a number of write operations
+        (for example, after a number of append operations) can help to make
+        the resultant array more performant.
+
+        """
+        # Get domain for var_name and tiledb array path.
+        domain = self.data_model.varname_domain_mapping[var_name]
+        domain_name = f'domain_{self.data_model.domains.index(domain)}'
+        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
+
+        self._consolidate(var_name, domain_path, iterations=iterations)
 
     def fill_missing_points(self, append_dim_name, verbose=False):
         # XXX duplicated from `append` method.
@@ -556,15 +577,29 @@ class MultiAttrTDBWriter(TDBWriter):
         if len(others) > 10:
             # Consolidate at the end of the append operations to make the resultant
             # array more performant.
-            config = tiledb.Config({"sm.consolidation.steps": 100})
-            ctx = tiledb.Ctx(config)
-            for i, domain_name in enumerate(domain_names):
-                if verbose:
-                    print()  # Clear last carriage-returned print statement.
-                    print(f'Consolidating array: {i+1}/{len(domain_names)}', end='\r')
-                array_path = os.path.join(self.array_filepath, self.array_name,
-                                          domain_name, data_array_name)
-                tiledb.consolidate(array_path, ctx=ctx)
+            self.consolidate(data_array_name, append_dim=append_dim, verbose=verbose)
+
+    def consolidate(self, data_array_name, iterations=100, append_dim=None, verbose=False):
+        """
+        Consolidating an array at the end of a number of write operations
+        (for example, after a number of append operations) can help to make
+        the resultant array more performant.
+
+        In the multi-attr case, we need to run one consolidate on each multi-attr
+        data array in each domain.
+
+        """
+        if append_dim is not None:
+            domain_names = [d for d in self.domains_mapping.keys()
+                            if append_dim in d.split(self.domain_separator)]
+        else:
+            domain_names = [d for d in self.domains_mapping.keys()]
+
+        for i, domain_name in enumerate(domain_names):
+            if verbose:
+                print(f'Consolidating array: {i+1}/{len(domain_names)}', end='\r')
+            domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
+            self._consolidate(data_array_name, domain_path, iterations=iterations)
 
     def fill_missing_points(self, append_dim_name, verbose=False):
         # Check all domains for including the append dimension.
