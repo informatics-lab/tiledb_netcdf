@@ -59,6 +59,44 @@ class Writer(object):
             append_dim = self.data_model.dimensions[append_axis]
         return append_axis, append_dim
 
+    def _fill_missing_points(self, coord_array_path, coord_array_name, verbose=False):
+        """
+        If one or more indices along the append axis are missing spatial points, we
+        end up with `NaN`s in the resultant coordinate array. This prevents loading
+        into Iris (as we cannot make a monotonic coordinate array).
+
+        Fill such missing points with interpolated point values so that Iris can load
+        the dataset, if with missing data points still. Use a simple custom 1D
+        interpolator as the SciPy and NumPy offerings cannot handle NaN values.
+
+        """
+        with tiledb.open(coord_array_path, 'r') as D:
+            ned = D.nonempty_domain()[0]
+            coord_points = D[ned[0]:ned[1]][coord_array_name]
+
+        missing_points, = np.nonzero(np.isnan(coord_points))
+        if len(missing_points):
+            if verbose:
+                print(f'{len(missing_points)} points to fill in {coord_array_name!r}.')
+
+            ind_points = np.arange(len(coord_points))
+            coord_steps = np.unique(np.diff(coord_points))
+            # Expects only a single non-NaN step (i.e. monotonicity).
+            numeric_step, = coord_steps[np.nonzero(~np.isnan(coord_steps))]
+
+            # Interpolate to fill the missing points.
+            vec_interp = np.vectorize(fillnan)
+            coord_points[missing_points] = vec_interp(ind_points[missing_points],
+                                                      coord_points[0],
+                                                      numeric_step)
+
+            # Write the whole filled array back to the TileDB coord array.
+            with tiledb.open(coord_array_path, 'w') as D:
+                D[ned[0]:ned[1]] = coord_points
+        else:
+            if verbose:
+                print(f'No missing points in {coord_array_name!r}, nothing to do.')
+
 
 class TDBWriter(Writer):
     """
@@ -278,6 +316,15 @@ class TDBWriter(Writer):
             config = tiledb.Config({"sm.consolidation.steps": 1000})
             ctx = tiledb.Ctx(config)
             tiledb.consolidate(os.path.join(domain_path, var_name), ctx=ctx)
+
+    def fill_missing_points(self, append_dim_name, verbose=False):
+        # XXX duplicated from `append` method.
+        domain = self.data_model.varname_domain_mapping[var_name]
+        domain_name = f'domain_{self.data_model.domains.index(domain)}'
+        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
+        coord_array_path = os.path.join(domain_path, append_dim_name)
+
+        self._fill_missing_points(coord_array_path, append_dim_name, verbose=verbose)
 
 
 class MultiAttrTDBWriter(TDBWriter):
@@ -509,15 +556,29 @@ class MultiAttrTDBWriter(TDBWriter):
         if len(others) > 10:
             # Consolidate at the end of the append operations to make the resultant
             # array more performant.
-            config = tiledb.Config({"sm.consolidation.steps": 1000})
+            config = tiledb.Config({"sm.consolidation.steps": 100})
             ctx = tiledb.Ctx(config)
             for i, domain_name in enumerate(domain_names):
                 if verbose:
                     print()  # Clear last carriage-returned print statement.
-                    print(f'Consolidating array: {i}/{len(domain_names)}', end='\r')
+                    print(f'Consolidating array: {i+1}/{len(domain_names)}', end='\r')
                 array_path = os.path.join(self.array_filepath, self.array_name,
                                           domain_name, data_array_name)
                 tiledb.consolidate(array_path, ctx=ctx)
+
+    def fill_missing_points(self, append_dim_name, verbose=False):
+        # Check all domains for including the append dimension.
+        coord_array_paths = []
+        for domain_name in self.domains_mapping.keys():
+            if append_dim_name in domain_name.split(self.domain_separator):
+                coord_array_path = os.path.join(self.array_filepath,
+                                                self.array_name,
+                                                domain_name,
+                                                append_dim_name)
+
+                self._fill_missing_points(coord_array_path,
+                                          append_dim_name,
+                                          verbose=verbose)
 
 
 class ZarrWriter(Writer):
@@ -695,6 +756,11 @@ def _dim_offsets(dim_points, self_stop_ind, self_stop, self_step, scalar=False):
 
     i_start, _ = _dim_inds(dim_points, spatial_inds, inds_offset)
     return i_start
+
+
+def fillnan(xi, y0, diff):
+    """A simple linear 1D interpolator."""
+    return y0 + (xi * diff)
 
 
 def _progress_report(other_data_model, verbose, i, total):
