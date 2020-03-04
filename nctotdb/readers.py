@@ -1,5 +1,6 @@
 from itertools import chain
 import os
+import warnings
 
 import cf_units
 import dask.array as da
@@ -9,6 +10,8 @@ from iris.fileformats.netcdf import parse_cell_methods
 import tiledb
 import xarray as xr
 import zarr
+
+from .grid_mappings import GridMapping
 
 
 # Ref Iris: https://github.com/SciTools/iris/blob/master/lib/iris/_cube_coord_common.py#L75
@@ -70,6 +73,12 @@ class Reader(object):
     TODO replace all os usages with tiledb ls'.
 
     """
+    horizontal_coord_names = ['latitude',
+                              'longitude',
+                              'grid_latitude',
+                              'grid_longitude',
+                              'projection_x_coordinate',
+                              'projection_y_coordinate']
     def __init__(self, input_filepath):
         self.input_filepath = input_filepath
 
@@ -303,11 +312,11 @@ class TDBReader(Reader):
                 points = A[array_inds][array_name]
         return metadata, points
 
-    def _load_dim(self, dim_path):
+    def _load_dim(self, dim_path, grid_mapping):
         """
         Create an Iris DimCoord from a TileDB array describing a dimension.
         
-        # TODO not handled here: circular, coord_system.
+        # TODO not handled here: circular.
 
         """
         metadata, points = self._from_tdb_array(dim_path, 'coord')
@@ -316,6 +325,13 @@ class TDBReader(Reader):
         standard_name = metadata.pop('standard_name', None)
         long_name = metadata.pop('long_name', None)
         var_name = metadata.pop('var_name', None)
+
+        # Check if we've a known horizontal coord name in order to write the
+        # grid mapping as it's coord system.
+        if standard_name in self.horizontal_coord_names:
+            coord_system = grid_mapping
+        else:
+            coord_system = None
 
         units = metadata.pop('units')
         if coord_name == 'time':
@@ -328,18 +344,19 @@ class TDBReader(Reader):
                          standard_name=standard_name,
                          long_name=long_name,
                          units=units,
-                         attributes=safe_attrs)
+                         attributes=safe_attrs,
+                         coord_system=coord_system)
         return coord_name, coord
 
-    def _load_group_dims(self, group_dim_paths):
+    def _load_group_dims(self, group_dim_paths, grid_mapping):
         """Load all dimension-describing (coordinate) arrays in the group."""
         group_dims = {}
         for dim_path in group_dim_paths:
-            name, coord = self._load_dim(dim_path)
+            name, coord = self._load_dim(dim_path, grid_mapping)
             group_dims[name] = coord
         return group_dims
 
-    def _load_data(self, array_path, group_dims,
+    def _load_data(self, array_path, group_dims, grid_mapping,
                    attr_name=None, separator='__'):
         """
         Create an Iris cube from a TileDB array describing a data variable and
@@ -382,7 +399,7 @@ class TDBReader(Reader):
         if all(itm is None for itm in [std_name, long_name, var_name]):
             long_name = attr_name
 
-        return Cube(lazy_data,
+        cube = Cube(lazy_data,
                     standard_name=std_name,
                     long_name=long_name,
                     var_name=var_name,
@@ -390,16 +407,18 @@ class TDBReader(Reader):
                     dim_coords_and_dims=dcad,
                     cell_methods=cell_methods,
                     attributes=safe_attrs)
+        cube.coord_system = grid_mapping
+        return cube
 
-    def _load_group_arrays(self, data_paths, group_dims):
+    def _load_group_arrays(self, data_paths, group_dims, grid_mapping):
         """Load all data-describing (cube) arrays in the group."""
         cubes = []
         for data_path in data_paths:
-            cube = self._load_data(data_path, group_dims)
+            cube = self._load_data(data_path, group_dims, grid_mapping)
             cubes.append(cube)
         return cubes
 
-    def _load_multiattr_arrays(self, data_paths, group_dims, attr_names=None):
+    def _load_multiattr_arrays(self, data_paths, group_dims, grid_mapping, attr_names=None):
         """Load all data-describing (cube) attrs from a multi-attr array."""
         if isinstance(attr_names, str):
             attr_names = [attr_names]
@@ -410,9 +429,31 @@ class TDBReader(Reader):
                 with tiledb.open(data_path, 'r') as A:
                     attr_names = A.meta['dataset'].split(',')
             for attr_name in attr_names:
-                cube = self._load_data(data_path, group_dims, attr_name=attr_name)
+                cube = self._load_data(data_path, group_dims, grid_mapping,
+                                       attr_name=attr_name)
                 cubes.append(cube)
         return cubes
+
+    def _get_grid_mapping(self, data_array_path):
+        """
+        Get the grid mapping (Iris coord_system) from the data array metadata.
+        Grid mapping is stored as a JSON string in the array meta,
+        which is translated by `.grid_mappings.GridMapping`.
+
+        """
+        grid_mapping = None
+        with tiledb.open(data_array_path, 'r') as A:
+            grid_mapping_str = A.meta.pop('grid_mapping', None)
+        if grid_mapping_str is not None and grid_mapping_str != 'none':
+            # Cannot write NoneType into TileDB array meta, so `'none'` is a
+            # stand-in that must be caught.
+            translator = GridMapping(grid_mapping_str)
+            try:
+                grid_mapping = translator.get_grid_mapping()
+            except Exception as e:
+                exception_type = e.__class__.__name__
+                warnings.warn(f'Re-raised as warning: {exception_type}: {e}.\nGrid mapping will be None.')
+        return grid_mapping
 
     def _get_arrays_and_dims(self, group_array_paths):
         """
@@ -459,12 +500,15 @@ class TDBReader(Reader):
         cubes = []
         for group_path, group_array_paths in iter_groups.items():
             dim_paths, data_paths = self._get_arrays_and_dims(group_array_paths)
-            group_coords = self._load_group_dims(dim_paths)
+            grid_mapping = self._get_grid_mapping(data_paths[0])
+            group_coords = self._load_group_dims(dim_paths, grid_mapping)
             if self.data_array_name is not None:
-                group_cubes = self._load_multiattr_arrays(data_paths, group_coords,
+                group_cubes = self._load_multiattr_arrays(data_paths,
+                                                          group_coords,
+                                                          grid_mapping,
                                                           attr_names=name)
             else:
-                group_cubes = self._load_group_arrays(data_paths, group_coords)
+                group_cubes = self._load_group_arrays(data_paths, group_coords, grid_mapping)
             cubes.extend(group_cubes)
 
         self.artifact = cubes[0] if len(cubes) == 1 else CubeList(cubes)
