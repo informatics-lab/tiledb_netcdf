@@ -190,7 +190,7 @@ class TDBWriter(Writer):
         array metadata.
 
         """
-        grid_mapping_name = data_var.get(grid_mapping, None)
+        grid_mapping_name = data_var.getncattr("grid_mapping")
         result = 'none'  # TileDB probably won't support `NoneType` in array meta.
         if grid_mapping_name is not None:
             assert grid_mapping_name in self.data_model.grid_mapping
@@ -438,6 +438,9 @@ class MultiAttrTDBWriter(TDBWriter):
                 A.meta['dataset'] = ','.join(data_var_names)
                 # Define this as being a multi-attr array.
                 A.meta['multiattr'] = True
+                # Add grid mapping metadata as a JSON string.
+                grid_mapping_string = self._get_grid_mapping(data_vars[0])
+                A.meta['grid_mapping'] = grid_mapping_string
                 # XXX: can't add list or tuple as values to metadata dictionary...
                 dim_coord_names = self.data_model.variables[data_var_names[0]].dimensions
                 A.meta['dimensions'] = ','.join(n for n in dim_coord_names)

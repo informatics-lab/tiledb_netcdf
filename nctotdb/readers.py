@@ -392,7 +392,7 @@ class TDBReader(Reader):
         # Dim Coords And Dims (mapping of coords to cube axes).
         dcad = [(group_dims[name], i) for i, name in enumerate(dim_names)]
         safe_attrs = self._handle_attributes(metadata,
-                                             exclude_keys=['dataset', 'multiattr'])
+                                             exclude_keys=['dataset', 'multiattr', 'grid_mapping'])
         std_name = metadata.pop('standard_name', None)
         long_name = metadata.pop('long_name', None)
         var_name = metadata.pop('var_name', None)
@@ -443,7 +443,11 @@ class TDBReader(Reader):
         """
         grid_mapping = None
         with tiledb.open(data_array_path, 'r') as A:
-            grid_mapping_str = A.meta.pop('grid_mapping', None)
+            try:
+                grid_mapping_str = A.meta['grid_mapping']
+            except KeyError:
+                grid_mapping_str = None
+        print(grid_mapping_str)
         if grid_mapping_str is not None and grid_mapping_str != 'none':
             # Cannot write NoneType into TileDB array meta, so `'none'` is a
             # stand-in that must be caught.
