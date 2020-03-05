@@ -2,14 +2,7 @@ from itertools import chain
 import os
 import warnings
 
-import cf_units
-import dask.array as da
-from iris.coords import CellMethod, DimCoord
-from iris.cube import Cube, CubeList
-from iris.fileformats.netcdf import parse_cell_methods
 import tiledb
-import xarray as xr
-import zarr
 
 from .grid_mappings import GridMapping
 
@@ -102,6 +95,12 @@ class Reader(object):
 
 
 class TDBReader(Reader):
+    import cf_units
+    import dask.array as da
+    from iris.coords import CellMethod, DimCoord
+    from iris.cube import Cube, CubeList
+    from iris.fileformats.netcdf import parse_cell_methods
+
     def __init__(self, input_filepath, storage_options=None, data_array_name=None):
         super().__init__(input_filepath)
 
@@ -519,12 +518,16 @@ class TDBReader(Reader):
         return self.artifact
 
     def to_xarray(self, name=None):
+        import xarray as xr
+
         intermediate = self.to_iris(name=name)
         self.artifact = xr.from_iris(intermediate)
         return self.artifact
 
 
 class ZarrReader(Reader):
+    import xarray as xr
+
     def __init__(self, input_filepath):
         super().__init__(input_filepath)
 
