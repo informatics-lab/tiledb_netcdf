@@ -8,6 +8,7 @@ import tiledb
 import zarr
 
 from .data_model import NCDataModel
+from .grid_mappings import store_grid_mapping
 
 
 class Writer(object):
@@ -182,6 +183,21 @@ class TDBWriter(Writer):
         """Set the array indices to write the array data into."""
         return _array_indices(shape, start_index)
 
+    def _get_grid_mapping(self, data_var):
+        """
+        Get the data variable's grid mapping variable, encode it as a JSON string
+        for easy storage in the TileDB array's meta and return it for storage as
+        array metadata.
+
+        """
+        grid_mapping_name = data_var.getncattr("grid_mapping")
+        result = 'none'  # TileDB probably won't support `NoneType` in array meta.
+        if grid_mapping_name is not None:
+            assert grid_mapping_name in self.data_model.grid_mapping
+            grid_mapping_var = self.data_model.variables[grid_mapping_name]
+            result = store_grid_mapping(grid_mapping_var)
+        return result
+
     def populate_array(self, var_name, data_var, group_dirname,
                        start_index=None, write_meta=True):
         """Write the contents of a netcdf data variable into a tiledb array."""
@@ -203,6 +219,9 @@ class TDBWriter(Writer):
                     A.meta['dataset'] = var_name
                     # Define this as not being a multi-attr array.
                     A.meta['multiattr'] = False
+                    # Add grid mapping metadata as a JSON string.
+                    grid_mapping_string = self._get_grid_mapping(data_var)
+                    A.meta['grid_mapping'] = grid_mapping_string
                     # XXX: can't add list or tuple as values to metadata dictionary...
                     dim_coord_names = self.data_model.variables[var_name].dimensions
                     A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
@@ -419,6 +438,9 @@ class MultiAttrTDBWriter(TDBWriter):
                 A.meta['dataset'] = ','.join(data_var_names)
                 # Define this as being a multi-attr array.
                 A.meta['multiattr'] = True
+                # Add grid mapping metadata as a JSON string.
+                grid_mapping_string = self._get_grid_mapping(data_vars[0])
+                A.meta['grid_mapping'] = grid_mapping_string
                 # XXX: can't add list or tuple as values to metadata dictionary...
                 dim_coord_names = self.data_model.variables[data_var_names[0]].dimensions
                 A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
