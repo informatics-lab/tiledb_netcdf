@@ -7,6 +7,7 @@ import dask.array as da
 from iris.coords import CellMethod, DimCoord
 from iris.cube import Cube, CubeList
 from iris.fileformats.netcdf import parse_cell_methods
+import numpy as np
 import tiledb
 import xarray as xr
 import zarr
@@ -41,13 +42,14 @@ IRIS_FORBIDDEN_KEYS = set([
 class TileDBDataProxy:
     """A proxy to the data of a single TileDB array attribute."""
 
-    __slots__ = ("shape", "dtype", "path", "var_name")
+    __slots__ = ("shape", "dtype", "path", "var_name", "handle_nan")
 
-    def __init__(self, shape, dtype, path, var_name):
+    def __init__(self, shape, dtype, path, var_name, handle_nan=None):
         self.shape = shape
         self.dtype = dtype
         self.path = path
         self.var_name = var_name
+        self.handle_nan = handle_nan
 
     @property
     def ndim(self):
@@ -56,6 +58,13 @@ class TileDBDataProxy:
     def __getitem__(self, keys):
         with tiledb.open(self.path, 'r') as A:
             data = A[keys][self.var_name]
+            if self.handle_nan is not None:
+                if self.handle_nan == 'mask':
+                    data = np.ma.masked_invalid(data, np.nan)
+                elif type(self.handle_nan) in [int, float]:
+                    data = np.nan_to_num(data, nan=self.handle_nan, copy=False)
+                else:
+                    raise ValueError(f'Not a valid nan-handling approach: {self.handle_nan!r}.')
         return data
 
     def __getstate__(self):
@@ -294,7 +303,8 @@ class TDBReader(Reader):
             allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS)
         return {k: attrs[k] for k in allowed_keys}
 
-    def _from_tdb_array(self, array_path, naming_key, array_name=None, to_dask=False):
+    def _from_tdb_array(self, array_path, naming_key,
+                        array_name=None, to_dask=False, handle_nan=None):
         with tiledb.open(array_path, 'r') as A:
             metadata = {k: v for k, v in A.meta.items()}
             if array_name is None:
@@ -305,7 +315,8 @@ class TDBReader(Reader):
                 dtype = schema.attr(array_name).dtype
                 chunks = [schema.domain.dim(i).tile for i in range(schema.ndim)]
                 array_shape = self._array_shape(A.nonempty_domain())
-                proxy = TileDBDataProxy(array_shape, dtype, array_path, array_name)
+                proxy = TileDBDataProxy(array_shape, dtype, array_path, array_name,
+                                        handle_nan=handle_nan)
                 points = da.from_array(proxy, chunks, name=naming_key)
             else:
                 array_inds = self._array_shape(A.nonempty_domain(), slices=True)
@@ -357,7 +368,7 @@ class TDBReader(Reader):
         return group_dims
 
     def _load_data(self, array_path, group_dims, grid_mapping,
-                   attr_name=None, separator='__'):
+                   attr_name=None, separator='__', handle_nan=None):
         """
         Create an Iris cube from a TileDB array describing a data variable and
         pre-loaded dimension-describing coordinates.
@@ -367,14 +378,16 @@ class TDBReader(Reader):
         """
         single_attr_name = 'dataset'
         if attr_name is None:
-            attr_metadata, lazy_data = self._from_tdb_array(array_path, single_attr_name, to_dask=True)
+            attr_metadata, lazy_data = self._from_tdb_array(array_path, single_attr_name,
+                                                            to_dask=True, handle_nan=handle_nan)
             metadata = attr_metadata
             attr_name = metadata.pop(single_attr_name)
         else:
             attr_metadata, lazy_data = self._from_tdb_array(array_path,
                                                             single_attr_name,
                                                             array_name=attr_name,
-                                                            to_dask=True)
+                                                            to_dask=True,
+                                                            handle_nan=handle_nan)
             metadata = {}
             for key, value in attr_metadata.items():
                 # Varname-specific keys are of form `keyname__attrname`; we only want `keyname`.
@@ -410,15 +423,16 @@ class TDBReader(Reader):
         cube.coord_system = grid_mapping
         return cube
 
-    def _load_group_arrays(self, data_paths, group_dims, grid_mapping):
+    def _load_group_arrays(self, data_paths, group_dims, grid_mapping, handle_nan=None):
         """Load all data-describing (cube) arrays in the group."""
         cubes = []
         for data_path in data_paths:
-            cube = self._load_data(data_path, group_dims, grid_mapping)
+            cube = self._load_data(data_path, group_dims, grid_mapping, handle_nan=handle_nan)
             cubes.append(cube)
         return cubes
 
-    def _load_multiattr_arrays(self, data_paths, group_dims, grid_mapping, attr_names=None):
+    def _load_multiattr_arrays(self, data_paths, group_dims, grid_mapping,
+                               attr_names=None, handle_nan=None):
         """Load all data-describing (cube) attrs from a multi-attr array."""
         if isinstance(attr_names, str):
             attr_names = [attr_names]
@@ -430,7 +444,7 @@ class TDBReader(Reader):
                     attr_names = A.meta['dataset'].split(',')
             for attr_name in attr_names:
                 cube = self._load_data(data_path, group_dims, grid_mapping,
-                                       attr_name=attr_name)
+                                       attr_name=attr_name, handle_nan=handle_nan)
                 cubes.append(cube)
         return cubes
 
@@ -447,7 +461,6 @@ class TDBReader(Reader):
                 grid_mapping_str = A.meta['grid_mapping']
             except KeyError:
                 grid_mapping_str = None
-        print(grid_mapping_str)
         if grid_mapping_str is not None and grid_mapping_str != 'none':
             # Cannot write NoneType into TileDB array meta, so `'none'` is a
             # stand-in that must be caught.
@@ -484,7 +497,7 @@ class TDBReader(Reader):
 
         return dim_array_paths, data_array_paths
 
-    def to_iris(self, name=None):
+    def to_iris(self, name=None, handle_nan=None):
         """
         Convert all arrays in a TileDB into one or more Iris cubes.
 
@@ -510,9 +523,11 @@ class TDBReader(Reader):
                 group_cubes = self._load_multiattr_arrays(data_paths,
                                                           group_coords,
                                                           grid_mapping,
-                                                          attr_names=name)
+                                                          attr_names=name,
+                                                          handle_nan=handle_nan)
             else:
-                group_cubes = self._load_group_arrays(data_paths, group_coords, grid_mapping)
+                group_cubes = self._load_group_arrays(data_paths, group_coords, grid_mapping,
+                                                      handle_nan=handle_nan)
             cubes.extend(group_cubes)
 
         self.artifact = cubes[0] if len(cubes) == 1 else CubeList(cubes)
