@@ -23,6 +23,8 @@ class Writer(object):
         self.array_filepath = array_filepath
         self.unlimited_dims = unlimited_dims
 
+        self._scalar_unlimited = None
+
         self._array_name = array_name
         if self._array_name is None:
             self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
@@ -132,8 +134,13 @@ class TDBWriter(Writer):
         dim_coord = self.data_model.variables[dim_name]
         chunks = self.data_model.get_chunks(dim_name)
 
-        # TODO: work out nD coords (although a DimCoord will never be nD).
-        dim_coord_len, = dim_coord.shape
+        # Handle scalar dimensions.
+        if dim_name == self._scalar_unlimited:
+            dim_coord_len = 1
+            chunks = (1,)
+        else:
+            # TODO: work out nD coords (although a DimCoord will never be nD).
+            dim_coord_len, = dim_coord.shape
 
         # Set the tdb dimension dtype to `int64` regardless of input.
         # Dimensions must have int indices for dense array schemas.
@@ -167,6 +174,9 @@ class TDBWriter(Writer):
 
             data_var = self.data_model.variables[var_name]
             data_var_dims = data_var.dimensions
+            # Handle scalar append dimension coordinates.
+            if not len(data_var_dims) and var_name == self._scalar_unlimited:
+                data_var_dims = [self._scalar_unlimited]
             array_dims = [self._create_tdb_dim(dim_name, coords) for dim_name in data_var_dims]
             tdb_domain = tiledb.Domain(*array_dims)
 
@@ -206,7 +216,8 @@ class TDBWriter(Writer):
         array_filename = os.path.join(group_dirname, var_name)
 
         # Write to the array.
-        write_array(array_filename, data_var, start_index=start_index)
+        scalar = var_name == self._scalar_unlimited
+        write_array(array_filename, data_var, start_index=start_index, scalar=scalar)
         if write_meta:
             with tiledb.open(array_filename, 'w') as A:
                 # Set tiledb metadata from data var ncattrs.
@@ -411,6 +422,10 @@ class MultiAttrTDBWriter(TDBWriter):
         shape_domains = []
         for data_var_name in self.data_model.data_var_names:
             dimensions = self.data_model.variables[data_var_name].dimensions
+            # Promote scalar append dimensions.
+            if self.unlimited_dims not in dimensions and self.unlimited_dims in self.data_model.scalar_coord_names:
+                dimensions = [self.unlimited_dims] + list(dimensions)
+                self._scalar_unlimited = self.unlimited_dims
             domain_string = self._public_domain_name(dimensions, self.domain_separator)
             shape_domains.append((domain_string, data_var_name))
 
@@ -426,7 +441,8 @@ class MultiAttrTDBWriter(TDBWriter):
 
         # Write to the array.
         data_vars = [self.data_model.variables[name] for name in data_var_names]
-        write_multiattr_array(array_filename, data_vars, start_index=start_index)
+        scalar = self._scalar_unlimited is not None
+        write_multiattr_array(array_filename, data_vars, start_index=start_index, scalar=scalar)
         if write_meta:
             multi_attr_metadata = self._multi_attr_metadata(data_var_names)
             with tiledb.open(array_filename, 'w') as A:
@@ -719,11 +735,14 @@ def _array_indices(shape, start_index):
     return tuple(array_indices)
 
 
-def write_array(array_filename, data_var, start_index=None):
+def write_array(array_filename, data_var, start_index=None, scalar=False):
     """Write to the array."""
     if start_index is None:
         start_index = 0
-        shape = data_var.shape
+        if scalar:
+            shape = (1,)
+        else:
+            shape = data_var.shape
         write_indices = _array_indices(shape, start_index)
     else:
         write_indices = start_index
@@ -733,11 +752,13 @@ def write_array(array_filename, data_var, start_index=None):
         A[write_indices] = data_var[...]
 
 
-def write_multiattr_array(array_filename, data_vars, start_index=None):
+def write_multiattr_array(array_filename, data_vars, start_index=None, scalar=False):
     """Write to each attr in the array."""
     if start_index is None:
         start_index = 0
         shape = data_vars[0].shape  # All data vars *must* have the same shape for writing...
+        if scalar:
+            shape = (1,) + shape
         write_indices = _array_indices(shape, start_index)
     else:
         write_indices = start_index
