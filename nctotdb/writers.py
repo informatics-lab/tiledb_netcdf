@@ -319,9 +319,14 @@ class TDBWriter(Writer):
 
         self_dim_var = self.data_model.variables[append_dim]
         self_dim_points = copy.copy(self_dim_var[:])
-        self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
-        self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
-                                                  [self_dim_start, self_dim_stop])
+        if append_dim == self._scalar_unlimited:
+            self_ind_stop = 0
+            self_dim_stop = self_dim_points
+            self_step = 1
+        else:
+            self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
+            self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
+                                                      [self_dim_start, self_dim_stop])
 
         # Get domain for var_name and tiledb array path.
         domain = self.data_model.varname_domain_mapping[var_name]
@@ -573,9 +578,14 @@ class MultiAttrTDBWriter(TDBWriter):
         # Get starting dimension points and offsets.
         self_dim_var = self.data_model.variables[append_dim]
         self_dim_points = copy.copy(self_dim_var[:])
-        self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
-        self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
-                                                  [self_dim_start, self_dim_stop])
+        if append_dim == self._scalar_unlimited:
+            self_ind_stop = 1
+            self_dim_stop = self_dim_points
+            self_step = 0
+        else:
+            self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
+            self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
+                                                      [self_dim_start, self_dim_stop])
 
         # For multidim / multi-attr appends this will be more complex.
         common_job_args = [domain_names, data_array_name, append_dim,

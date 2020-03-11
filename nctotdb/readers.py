@@ -453,7 +453,7 @@ class TDBReader(Reader):
                     cell_methods=cell_methods,
                     attributes=safe_attrs)
         cube.coord_system = grid_mapping
-        
+
         # Add any scalar coordinates there might be.
         if scalar_dims is not None:
             for coord_name in scalar_dims:
