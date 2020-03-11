@@ -520,6 +520,30 @@ class MultiAttrTDBWriter(TDBWriter):
                                         group_dirname, data_array_name)
             self.populate_multiattr_array(data_array_name, domain_var_names, group_dirname)
 
+    def _scalar_step(self, dim_var):
+        """
+        Manually calculate the append dimension point step in the scalar case
+        when it cannot be done by finding the diff between successive points.
+
+        """
+        from datetime import datetime
+        from cf_units import Unit
+
+        periods = ['years', 'months', 'days', 'hours', 'minutes', 'seconds']
+        base_time = [1970, 1, 1, 0, 0, 0]
+
+        point_value = dim_var[:]
+        units = point_value.getncattr('units')
+        calendar = point_value.getncattr('calendar')
+        ref_unit = Unit(units, calendar=calendar_)
+        period = units.origin.split(' ')[0]
+
+        base_point = unit.date2num(datetime(*base_time))
+        # Find the numeric offset from adding 1 to the unit period (e.g. hours, days, ...)
+        base_time[periods.index(period)] += 1
+        offset_point = unit.date2num(datetime(*base_time))
+        return offset_point - base_point
+
     def _make_tile_helper(self, args, kwargs):
         other, domain_names, data_array_name, append_dim, *other_args = args
         verbose = False
@@ -581,7 +605,7 @@ class MultiAttrTDBWriter(TDBWriter):
         if append_dim == self._scalar_unlimited:
             self_ind_stop = 1
             self_dim_stop = self_dim_points
-            self_step = 0
+            self_step = self._scalar_step(self_dim_var)
         else:
             self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
             self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
