@@ -240,9 +240,12 @@ class TDBWriter(Writer):
                     # A dim coord gets a `coord` key in the metadata dictionary,
                     # value being the name of the coordinate.
                     A.meta['coord'] = self.data_model.dimensions[var_name].name
+                elif var_name == self._scalar_unlimited:
+                    # Handle scalar coords along the append axis.
+                    A.meta['coord'] = self._scalar_unlimited
                 else:
                     # Don't know how to handle this. It might be an aux or scalar
-                    # coord, but we're not currently writing TDB arrays for them.
+                    # coord, but we're not currently writing TileDB arrays for them.
                     pass
 
     def populate_domain_arrays(self, domain_vars, group_dirname):

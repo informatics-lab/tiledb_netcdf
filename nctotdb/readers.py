@@ -57,6 +57,7 @@ class TileDBDataProxy:
 
     def __getitem__(self, keys):
         with tiledb.open(self.path, 'r') as A:
+            # Remove any length-one dimensions.
             data = A[keys][self.var_name]
             if self.handle_nan is not None:
                 if self.handle_nan == 'mask':
@@ -271,13 +272,19 @@ class TDBReader(Reader):
 
         return named_array_path, dim_paths
 
-    def _array_shape(self, nonempty_domain, slices=False):
+    def _array_shape(self, nonempty_domain, scalar_dims=False, slices=False):
         """
         Use the TileDB array's nonempty domain (i.e. the domain that encapsulates
         all written cells) to set the shape of the data to be read out of the
         TileDB array.
 
         """
+        # Remove scalar dimensions.
+        if scalar_dims:
+            nonempty_domain = list(nonempty_domain)
+            for axis in nonempty_domain:
+                if axis == (0, 0):  # This is a scalar axis.
+                    _ = nonempty_domain.pop(nonempty_domain.index(axis))
         # We need to include the stop index, not exclude it.
         if slices:
             slices = [slice(start, stop+1, 1) for (start, stop) in nonempty_domain]
@@ -303,23 +310,32 @@ class TDBReader(Reader):
             allowed_keys = list(attrs_keys - IRIS_FORBIDDEN_KEYS)
         return {k: attrs[k] for k in allowed_keys}
 
-    def _from_tdb_array(self, array_path, naming_key,
+    def _from_tdb_array(self, array_path, naming_key, group_dim_names=None,
                         array_name=None, to_dask=False, handle_nan=None):
+        scalar_dims = False
         with tiledb.open(array_path, 'r') as A:
             metadata = {k: v for k, v in A.meta.items()}
             if array_name is None:
                 array_name = metadata[naming_key]
-            # This may well not maintain lazy data...
+            if group_dim_names is not None:
+                dim_names = metadata['dimensions'].split(',')
+                scalar_dims = len(list(set(group_dim_names) - set(dim_names))) != 0
             if to_dask:
                 schema = A.schema
                 dtype = schema.attr(array_name).dtype
                 chunks = [schema.domain.dim(i).tile for i in range(schema.ndim)]
-                array_shape = self._array_shape(A.nonempty_domain())
+                if scalar_dims:
+                    for chunk in chunks:
+                        if chunk == 1:
+                            _ = chunks.pop(chunks.index(chunk))
+                array_shape = self._array_shape(A.nonempty_domain(), scalar_dims=scalar_dims)
                 proxy = TileDBDataProxy(array_shape, dtype, array_path, array_name,
                                         handle_nan=handle_nan)
                 points = da.from_array(proxy, chunks, name=naming_key)
             else:
-                array_inds = self._array_shape(A.nonempty_domain(), slices=True)
+                array_inds = self._array_shape(A.nonempty_domain(),
+                                               scalar_dims=scalar_dims,
+                                               slices=True)
                 points = A[array_inds][array_name]
         return metadata, points
 
@@ -367,6 +383,20 @@ class TDBReader(Reader):
             group_dims[name] = coord
         return group_dims
 
+    def _coords_and_dims(self, data_shape, dim_names, group_dims):
+        """
+        Define the mapping of named dimension coordinates to cube data axes,
+        including handling scalar coordinates masquerading as a length-one dimension.
+
+        """
+        dcad = [(group_dims[name], i) for i, name in enumerate(dim_names)]
+        dims_shape = [group_dims[name].shape[0] for name in dim_names]
+        scalar_dim_names = list(set(group_dims.keys()) - set(dim_names))
+
+        if not len(scalar_dim_names):
+            scalar_dim_names = None
+        return dcad, scalar_dim_names
+
     def _load_data(self, array_path, group_dims, grid_mapping,
                    attr_name=None, separator='__', handle_nan=None):
         """
@@ -379,12 +409,14 @@ class TDBReader(Reader):
         single_attr_name = 'dataset'
         if attr_name is None:
             attr_metadata, lazy_data = self._from_tdb_array(array_path, single_attr_name,
+                                                            group_dim_names=group_dims,
                                                             to_dask=True, handle_nan=handle_nan)
             metadata = attr_metadata
             attr_name = metadata.pop(single_attr_name)
         else:
             attr_metadata, lazy_data = self._from_tdb_array(array_path,
                                                             single_attr_name,
+                                                            group_dim_names=group_dims,
                                                             array_name=attr_name,
                                                             to_dask=True,
                                                             handle_nan=handle_nan)
@@ -403,7 +435,7 @@ class TDBReader(Reader):
         cell_methods = parse_cell_methods(metadata.pop('cell_methods', None))
         dim_names = metadata.pop('dimensions').split(',')
         # Dim Coords And Dims (mapping of coords to cube axes).
-        dcad = [(group_dims[name], i) for i, name in enumerate(dim_names)]
+        dcad, scalar_dims = self._coords_and_dims(lazy_data.shape, dim_names, group_dims)
         safe_attrs = self._handle_attributes(metadata,
                                              exclude_keys=['dataset', 'multiattr', 'grid_mapping'])
         std_name = metadata.pop('standard_name', None)
@@ -421,6 +453,11 @@ class TDBReader(Reader):
                     cell_methods=cell_methods,
                     attributes=safe_attrs)
         cube.coord_system = grid_mapping
+        
+        # Add any scalar coordinates there might be.
+        if scalar_dims is not None:
+            for coord_name in scalar_dims:
+                cube.add_aux_coord(group_dims[coord_name])
         return cube
 
     def _load_group_arrays(self, data_paths, group_dims, grid_mapping, handle_nan=None):
