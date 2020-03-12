@@ -331,6 +331,7 @@ class TDBReader(Reader):
                 array_shape = self._array_shape(A.nonempty_domain(), scalar_dims=scalar_dims)
                 proxy = TileDBDataProxy(array_shape, dtype, array_path, array_name,
                                         handle_nan=handle_nan)
+                print(f'Array shape: {array_shape}, proxy shape: {proxy.shape}, chunks: {chunks}')
                 points = da.from_array(proxy, chunks, name=naming_key)
             else:
                 array_inds = self._array_shape(A.nonempty_domain(),

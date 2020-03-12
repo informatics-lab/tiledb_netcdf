@@ -528,7 +528,6 @@ class MultiAttrTDBWriter(TDBWriter):
         """
         other_data_model = NCDataModel(other)
         other_data_model.classify_variables()
-        other_data_model.get_metadata()
         offset_point = other_data_model.variables[append_dim][:]
         return offset_point - base_point
 
@@ -557,7 +556,7 @@ class MultiAttrTDBWriter(TDBWriter):
                                  array_var_names, append_axis, append_dim, *other_args)
 
     def append(self, others, append_dim, data_array_name,
-              logfile=None, parallel=False, verbose=False):
+              baseline=None, logfile=None, parallel=False, verbose=False):
         """
         Append extra data as described by the contents of `others` onto
         an existing TileDB array along the axis defined by `append_dim`.
@@ -591,13 +590,16 @@ class MultiAttrTDBWriter(TDBWriter):
         self_dim_var = self.data_model.variables[append_dim]
         self_dim_points = copy.copy(self_dim_var[:])
         if append_dim == self._scalar_unlimited:
-            self_ind_stop = 1
+            if baseline is None:
+                raise ValueError('Cannot determine scalar step without a baseline.')
+            self_ind_stop = 0
             self_dim_stop = self_dim_points
-            self_step = self._scalar_step(self_dim_points, append_dim, others[0])
+            self_step = self._scalar_step(self_dim_points, append_dim, baseline)
         else:
             self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
             self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
                                                       [self_dim_start, self_dim_stop])
+        print(self_step)
 
         # For multidim / multi-attr appends this will be more complex.
         common_job_args = [domain_names, data_array_name, append_dim,
