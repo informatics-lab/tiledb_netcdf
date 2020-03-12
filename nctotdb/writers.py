@@ -527,6 +527,17 @@ class MultiAttrTDBWriter(TDBWriter):
                                         group_dirname, data_array_name)
             self.populate_multiattr_array(data_array_name, domain_var_names, group_dirname)
 
+    def _scalar_step(self, base_point, append_dim, other):
+        """
+        Manually calculate the append dimension point step in the scalar case
+        when it cannot be done by finding the diff between successive points.
+
+        """
+        other_data_model = NCDataModel(other)
+        other_data_model.classify_variables()
+        offset_point = other_data_model.variables[append_dim][:]
+        return offset_point - base_point
+
     def _make_tile_helper(self, args, kwargs):
         other, domain_names, data_array_name, append_dim, *other_args = args
         verbose = False
@@ -552,7 +563,7 @@ class MultiAttrTDBWriter(TDBWriter):
                                  array_var_names, append_axis, append_dim, *other_args)
 
     def append(self, others, append_dim, data_array_name,
-              logfile=None, parallel=False, verbose=False):
+               baseline=None, logfile=None, parallel=False, verbose=False):
         """
         Append extra data as described by the contents of `others` onto
         an existing TileDB array along the axis defined by `append_dim`.
@@ -585,9 +596,17 @@ class MultiAttrTDBWriter(TDBWriter):
         # Get starting dimension points and offsets.
         self_dim_var = self.data_model.variables[append_dim]
         self_dim_points = copy.copy(self_dim_var[:])
-        self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
-        self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
-                                                  [self_dim_start, self_dim_stop])
+        
+        if append_dim == self._scalar_unlimited:
+            if baseline is None:
+                raise ValueError('Cannot determine scalar step without a baseline dataset.')
+            self_ind_stop = 0
+            self_dim_stop = self_dim_points
+            self_step = self._scalar_step(self_dim_points, append_dim, baseline)
+        else:
+            self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
+            self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
+                                                      [self_dim_start, self_dim_stop])
 
         # For multidim / multi-attr appends this will be more complex.
         common_job_args = [domain_names, data_array_name, append_dim,
