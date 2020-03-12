@@ -36,6 +36,18 @@ class Writer(object):
         other_coords = variable.coordinates.split(' ')
         return dim_coords + other_coords
 
+    def _get_dim_coord_names(self, var_name):
+        """
+        Figure out names of the dimension-describing coordinates for this array,
+        including the promoted append-dimension scalar coordinate if necessary.
+
+        """
+        dim_coord_names = self.data_model.variables[var_name].dimensions
+        if self._scalar_unlimited is not None:
+            # `dim_coord_names` is a tuple...
+            dim_coord_names = (self._scalar_unlimited,) + dim_coord_names
+        return dim_coord_names
+
     def _append_checker(self, other_data_model, var_name, append_dim):
         """Checks to see if an append operation can go ahead."""
         # Sanity checks: is the var name in both self, other, and the tiledb?
@@ -234,12 +246,15 @@ class TDBWriter(Writer):
                     grid_mapping_string = self._get_grid_mapping(data_var)
                     A.meta['grid_mapping'] = grid_mapping_string
                     # XXX: can't add list or tuple as values to metadata dictionary...
-                    dim_coord_names = self.data_model.variables[var_name].dimensions
+                    dim_coord_names = self._get_dim_coord_names(var_name)
                     A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
                 elif var_name in self.data_model.dim_coord_names:
                     # A dim coord gets a `coord` key in the metadata dictionary,
                     # value being the name of the coordinate.
                     A.meta['coord'] = self.data_model.dimensions[var_name].name
+                elif var_name == self._scalar_unlimited:
+                    # Handle scalar coords along the append axis.
+                    A.meta['coord'] = self._scalar_unlimited
                 else:
                     # Don't know how to handle this. It might be an aux or scalar
                     # coord, but we're not currently writing TDB arrays for them.
@@ -458,7 +473,7 @@ class MultiAttrTDBWriter(TDBWriter):
                 grid_mapping_string = self._get_grid_mapping(data_vars[0])
                 A.meta['grid_mapping'] = grid_mapping_string
                 # XXX: can't add list or tuple as values to metadata dictionary...
-                dim_coord_names = self.data_model.variables[data_var_names[0]].dimensions
+                dim_coord_names = self._get_dim_coord_names(data_var_names[0])
                 A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
 
     def create_multiattr_array(self, domain_var_names, domain_dims,
