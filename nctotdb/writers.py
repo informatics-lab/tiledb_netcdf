@@ -227,7 +227,7 @@ class TDBWriter(Writer):
             attr = tiledb.Attr(name=var_name, dtype=data_var.dtype)
 
             # Create the URI for the array.
-            array_filename = os.path.join(group_dirname, var_name)
+            array_filename = self.array_path.construct_path(group_dirname, var_name)
             # Create an empty array.
             schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False, attrs=[attr])
             tiledb.Array.create(array_filename, schema)
@@ -254,15 +254,16 @@ class TDBWriter(Writer):
     def populate_array(self, var_name, data_var, group_dirname,
                        start_index=None, write_meta=True):
         """Write the contents of a netcdf data variable into a tiledb array."""
-        # Get the data variable and the filename of the array to write to.
+        # Get the data variable and the URI of the array to write to.
         var_name = data_var.name
-        array_filename = os.path.join(group_dirname, var_name)
+        array_filename = self.array_path.construct_path(group_dirname, var_name)
 
         # Write to the array.
         scalar = var_name == self._scalar_unlimited
-        write_array(array_filename, data_var, start_index=start_index, scalar=scalar)
+        write_array(array_filename, data_var,
+                    start_index=start_index, scalar=scalar, ctx=self.ctx)
         if write_meta:
-            with tiledb.open(array_filename, 'w') as A:
+            with tiledb.open(array_filename, 'w', ctx=self.ctx) as A:
                 # Set tiledb metadata from data var ncattrs.
                 for ncattr in data_var.ncattrs():
                     A.meta[ncattr] = data_var.getncattr(ncattr)
@@ -311,9 +312,10 @@ class TDBWriter(Writer):
 
             # Create group.
             domain_name = self._public_domain_name(domain)
-            group_dirname = os.path.join(self.array_filepath, self.array_name, domain_name)
-            # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
-            self._create_tdb_directory(group_dirname)
+            group_dirname = self.array_path.construct_path(domain_name, '')
+            if self.array_filepath is not None:
+                # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
+                self._create_tdb_directory(group_dirname)
             # TODO it would be good to write the domain's dim names into the group meta.
             tiledb.group_create(group_dirname)
 
@@ -485,15 +487,16 @@ class MultiAttrTDBWriter(TDBWriter):
     def populate_multiattr_array(self, data_array_name, data_var_names, group_dirname,
                                  start_index=None, write_meta=True):
         """Write the contents of multiple data variables into a multi-attr TileDB array."""
-        array_filename = os.path.join(group_dirname, data_array_name)
+        array_filename = self.array_path.construct_path(group_dirname, data_array_name)
 
         # Write to the array.
         data_vars = [self.data_model.variables[name] for name in data_var_names]
         scalar = self._scalar_unlimited is not None
-        write_multiattr_array(array_filename, data_vars, start_index=start_index, scalar=scalar)
+        write_multiattr_array(array_filename, data_vars,
+                              start_index=start_index, scalar=scalar, ctx=self.ctx)
         if write_meta:
             multi_attr_metadata = self._multi_attr_metadata(data_var_names)
-            with tiledb.open(array_filename, 'w') as A:
+            with tiledb.open(array_filename, 'w', ctx=self.ctx) as A:
                 # Set tiledb metadata from data var ncattrs.
                 for key, value in multi_attr_metadata.items():
                     A.meta[key] = value
@@ -524,7 +527,7 @@ class MultiAttrTDBWriter(TDBWriter):
             attrs.append(attr)
 
         # Create the URI for the array.
-        array_filename = os.path.join(group_dirname, data_array_name)
+        array_filename = self.array_path.construct_path(group_dirname, data_array_name)
         # Create an empty array.
         schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False, attrs=attrs)
         tiledb.Array.create(array_filename, schema)
@@ -545,9 +548,11 @@ class MultiAttrTDBWriter(TDBWriter):
             domain_coord_names = domain_name.split(self.domain_separator)
 
             # Create group.
-            group_dirname = os.path.join(self.array_filepath, self.array_name, domain_name)
-            # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
-            self._create_tdb_directory(group_dirname)
+            group_dirname = self.array_path.construct_path(domain_name, '')
+            # For a POSIX path we must explicitly create the group directory.
+            if self.array_filepath is not None:
+                # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
+                self._create_tdb_directory(group_dirname)
             # TODO it would be good to write the domain's dim names into the group meta.
             tiledb.group_create(group_dirname)
 
@@ -592,12 +597,12 @@ class MultiAttrTDBWriter(TDBWriter):
                 print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
 
             append_axis = domain_name.split(self.domain_separator).index(append_dim)
-            domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
+            domain_path = self.array_path.construct_path(domain_name, '')
             array_var_names = self.domains_mapping[domain_name]
             _make_multiattr_tile(other_data_model, domain_path, job_args.name,
                                  array_var_names, append_axis, append_dim, job_args.scalar,
                                  job_args.ind_stop, job_args.dim_stop, job_args.step,
-                                 scalar_offset=job_args.offset)
+                                 scalar_offset=job_args.offset, ctx=self.ctx)
 
     def _get_scalar_points_and_offsets(self, others, append_dim, self_dim_stop):
         odp = []
@@ -682,14 +687,17 @@ class MultiAttrTDBWriter(TDBWriter):
         if n_jobs > 10:
             # Consolidate at the end of the append operations to make the resultant
             # array more performant.
-            config = tiledb.Config({"sm.consolidation.steps": 100})
-            ctx = tiledb.Ctx(config)
+            if self.ctx is None:
+                config = tiledb.Config({"sm.consolidation.steps": 100})
+                ctx = tiledb.Ctx(config)
+            else:
+                ctx = self.ctx
+                ctx.set_tag("sm.consolidation.steps", 100)  # Maybe??
             for i, domain_name in enumerate(domain_names):
                 if verbose:
                     print()  # Clear last carriage-returned print statement.
                     print(f'Consolidating array: {i+1}/{len(domain_names)}', end="\r")
-                array_path = os.path.join(self.array_filepath, self.array_name,
-                                          domain_name, data_array_name)
+                array_path = self.array_path.construct_path(domain_name, data_array_name)
                 tiledb.consolidate(array_path, ctx=ctx)
 
     def fill_missing_points(self, append_dim_name, verbose=False):
@@ -697,11 +705,8 @@ class MultiAttrTDBWriter(TDBWriter):
         coord_array_paths = []
         for domain_name in self.domains_mapping.keys():
             if append_dim_name in domain_name.split(self.domain_separator):
-                coord_array_path = os.path.join(self.array_filepath,
-                                                self.array_name,
-                                                domain_name,
-                                                append_dim_name)
-
+                coord_array_path = self.array_path.construct_path(domain_name,
+                                                                  append_dim_name)
                 self._fill_missing_points(coord_array_path,
                                           append_dim_name,
                                           verbose=verbose)
@@ -823,7 +828,8 @@ def _array_indices(shape, start_index):
     return tuple(array_indices)
 
 
-def write_array(array_filename, data_var, start_index=None, scalar=False):
+def write_array(array_filename, data_var,
+                start_index=None, scalar=False, ctx=None):
     """Write to the array."""
     if start_index is None:
         start_index = 0
@@ -836,11 +842,12 @@ def write_array(array_filename, data_var, start_index=None, scalar=False):
         write_indices = start_index
 
     # Write netcdf data var contents into array.
-    with tiledb.open(array_filename, 'w') as A:
+    with tiledb.open(array_filename, 'w', ctx=ctx) as A:
         A[write_indices] = data_var[...]
 
 
-def write_multiattr_array(array_filename, data_vars, start_index=None, scalar=False):
+def write_multiattr_array(array_filename, data_vars,
+                          start_index=None, scalar=False, ctx=ctx):
     """Write to each attr in the array."""
     if start_index is None:
         start_index = 0
@@ -852,7 +859,7 @@ def write_multiattr_array(array_filename, data_vars, start_index=None, scalar=Fa
         write_indices = start_index
 
     # Write netcdf data var contents into array.
-    with tiledb.open(array_filename, 'w') as A:
+    with tiledb.open(array_filename, 'w', ctx=ctx) as A:
         A[write_indices] = {data_var.name: data_var[...] for data_var in data_vars}
 
 
@@ -914,7 +921,7 @@ def _make_tile_helper(args):
 def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
                          var_names, append_axis, append_dim, scalar_coord,
                          self_ind_stop, self_dim_stop, self_step,
-                         scalar_offset=None):
+                         scalar_offset=None, ctx=None):
     """Process appending a single tile to `self`, per domain."""
     other_data_vars = [other_data_model.variables[var_name] for var_name in var_names]
     data_var_shape  = other_data_vars[0].shape
@@ -939,11 +946,13 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
     # Append the data from other.
-    data_array_path = os.path.join(domain_path, data_array_name)
-    write_multiattr_array(data_array_path, other_data_vars, start_index=offset_inds)
+    data_array_path = f"{domain_path}/{data_array_name}"
+    write_multiattr_array(data_array_path, other_data_vars,
+                          start_index=offset_inds, ctx=ctx)
     # Append the extra dimension points from other.
-    dim_array_path = os.path.join(domain_path, append_dim)
-    write_array(dim_array_path, other_dim_var, start_index=offset_inds[append_axis])
+    dim_array_path = f"{domain_path}/{append_dim}"
+    write_array(dim_array_path, other_dim_var,
+                start_index=offset_inds[append_axis], ctx=ctx)
 
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
