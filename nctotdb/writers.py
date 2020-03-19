@@ -9,6 +9,7 @@ import zarr
 
 from .data_model import NCDataModel
 from .grid_mappings import store_grid_mapping
+from .paths import PosixArrayPath, AzureArrayPath
 
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
@@ -25,11 +26,20 @@ class Writer(object):
     of a NetCDF file to a different format.
 
     """
-    def __init__(self, data_model, array_filepath,
-                 array_name=None, unlimited_dims=None):
+    def __init__(self, data_model,
+                 array_filepath=None, container=None, array_name=None,
+                 unlimited_dims=None, ctx=None):
         self.data_model = data_model
         self.array_filepath = array_filepath
+        self.container = container  # Azure container name.
         self.unlimited_dims = unlimited_dims
+        self.ctx = ctx  # TileDB Context object.
+
+        # Need either a local filepath or a remote container.
+        if self.array_filepath is None and self.container is None:
+            raise ValueError("Must supply one of: array filepath, azure container.")
+        if self.array_filepath is not None and self.container is not None:
+            raise ValueError("Must supply either: array filepath, azure container, but got both.")
 
         self._scalar_unlimited = None
 
@@ -38,6 +48,12 @@ class Writer(object):
             self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
         else:
             self.array_name = self._array_name
+
+        if self.array_filepath is not None:
+            self.array_path = PosixArrayPath(self.array_filepath, self.array_name)
+        elif self.container is not None:
+            self.array_path = AzureArrayPath(self.container, self.array_name,
+                                             ctx=self.ctx)
 
     def _all_coords(self, variable):
         dim_coords = list(variable.dimensions)
@@ -59,16 +75,20 @@ class Writer(object):
     def _append_checker(self, other_data_model, var_name, append_dim):
         """Checks to see if an append operation can go ahead."""
         # Sanity checks: is the var name in both self, other, and the tiledb?
-        assert var_name in self.data_model.data_var_names, f'Variable name {var_name!r} not found in this data model.'
-        assert var_name in other_data_model.data_var_names, f'Variable name {var_name!r} not found in other data model.'
+        assert var_name in self.data_model.data_var_names, \
+            f'Variable name {var_name!r} not found in this data model.'
+        assert var_name in other_data_model.data_var_names, \
+            f'Variable name {var_name!r} not found in other data model.'
 
         self_var = self.data_model.variables[var_name]
         self_var_coords = self._all_coords(self_var)
         other_var = other_data_model.variables[var_name]
         other_var_coords = self._all_coords(other_var)
         # And is the append dimension valid?
-        assert append_dim in self_var_coords, f'Dimension {append_dim!r} not found in this data model.'
-        assert append_dim in other_var_coords, f'Dimension {append_dim!r} not found in other data model.'
+        assert append_dim in self_var_coords, \
+            f'Dimension {append_dim!r} not found in this data model.'
+        assert append_dim in other_var_coords, \
+            f'Dimension {append_dim!r} not found in other data model.'
 
     def _append_dimension(self, var_name, append_desc):
         """Determine the name and index of the dimension for the append operation."""
@@ -93,7 +113,7 @@ class Writer(object):
         interpolator as the SciPy and NumPy offerings cannot handle NaN values.
 
         """
-        with tiledb.open(coord_array_path, 'r') as D:
+        with tiledb.open(coord_array_path, 'r', ctx=self.ctx) as D:
             ned = D.nonempty_domain()[0]
             coord_points = D[ned[0]:ned[1]][coord_array_name]
 
@@ -114,7 +134,7 @@ class Writer(object):
                                                       numeric_step)
 
             # Write the whole filled array back to the TileDB coord array.
-            with tiledb.open(coord_array_path, 'w') as D:
+            with tiledb.open(coord_array_path, 'w', ctx=self.ctx) as D:
                 D[ned[0]:ned[1]] = coord_points
         else:
             if verbose:
@@ -129,9 +149,12 @@ class TDBWriter(Writer):
     Filepath: the filepath to save the tiledb array at.
 
     """
-    def __init__(self, data_model, array_filepath,
-                 array_name=None, unlimited_dims=None):
-        super().__init__(data_model, array_filepath, array_name, unlimited_dims)
+    def __init__(self, data_model,
+                 array_filepath=None, container=None, array_name=None,
+                 unlimited_dims=None, ctx=None):
+        super().__init__(data_model, array_filepath, container, array_name,
+                         unlimited_dims, ctx)
+
         if self.unlimited_dims is None:
             self.unlimited_dims = []
 
@@ -388,9 +411,11 @@ class MultiAttrTDBWriter(TDBWriter):
     Filepath: the filepath to save the tiledb array at.
 
     """
-    def __init__(self, data_model, array_filepath,
-                 array_name=None, unlimited_dims=None, domain_separator=','):
-        super().__init__(data_model, array_filepath, array_name, unlimited_dims)
+    def __init__(self, data_model,
+                 array_filepath=None, container=None, array_name=None,
+                 unlimited_dims=None, ctx=None, domain_separator=','):
+        super().__init__(data_model, array_filepath, container, array_name,
+                         unlimited_dims, ctx)
 
         self.domain_separator = domain_separator
         self._domains_mapping = None
