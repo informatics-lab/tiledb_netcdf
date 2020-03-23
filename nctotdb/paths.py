@@ -30,4 +30,5 @@ class AzureArrayPath(ArrayPath):
 
 
 class AWSArrayPath(ArrayPath):
-    raise NotImplementedError
+    def __init__(self):
+        raise NotImplementedError

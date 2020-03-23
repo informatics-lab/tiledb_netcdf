@@ -210,7 +210,7 @@ class TDBWriter(Writer):
                           tile=chunks,
                           dtype=dim_dtype)
 
-    def create_domain_arrays(self, domain_vars, group_dirname, coords=False):
+    def create_domain_arrays(self, domain_vars, domain_name, coords=False):
         """Create one single-attribute array per data var in this NC domain."""
         for var_name in domain_vars:
             # Set dims for the enclosing domain.
@@ -227,9 +227,10 @@ class TDBWriter(Writer):
             attr = tiledb.Attr(name=var_name, dtype=data_var.dtype)
 
             # Create the URI for the array.
-            array_filename = self.array_path.construct_path(group_dirname, var_name)
+            array_filename = self.array_path.construct_path(domain_name, var_name)
             # Create an empty array.
-            schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False, attrs=[attr])
+            schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False,
+                                        attrs=[attr], ctx=self.ctx)
             tiledb.Array.create(array_filename, schema)
 
     def _array_indices(self, shape, start_index):
@@ -251,12 +252,12 @@ class TDBWriter(Writer):
             result = store_grid_mapping(grid_mapping_var)
         return result
 
-    def populate_array(self, var_name, data_var, group_dirname,
+    def populate_array(self, var_name, data_var, domain_name,
                        start_index=None, write_meta=True):
         """Write the contents of a netcdf data variable into a tiledb array."""
         # Get the data variable and the URI of the array to write to.
         var_name = data_var.name
-        array_filename = self.array_path.construct_path(group_dirname, var_name)
+        array_filename = self.array_path.construct_path(domain_name, var_name)
 
         # Write to the array.
         scalar = var_name == self._scalar_unlimited
@@ -292,11 +293,11 @@ class TDBWriter(Writer):
                     # coord, but we're not currently writing TDB arrays for them.
                     pass
 
-    def populate_domain_arrays(self, domain_vars, group_dirname):
+    def populate_domain_arrays(self, domain_vars, domain_name):
         """Populate all arrays with data from netcdf data vars within a tiledb group."""
         for var_name in domain_vars:
             data_var = self.data_model.variables[var_name]
-            self.populate_array(var_name, data_var, group_dirname)
+            self.populate_array(var_name, data_var, domain_name)
 
     def create_domains(self):
         """
@@ -484,10 +485,10 @@ class MultiAttrTDBWriter(TDBWriter):
             domains_mapping[domain].append(data_var_name)
         self.domains_mapping = domains_mapping
 
-    def populate_multiattr_array(self, data_array_name, data_var_names, group_dirname,
+    def populate_multiattr_array(self, data_array_name, data_var_names, domain_name,
                                  start_index=None, write_meta=True):
         """Write the contents of multiple data variables into a multi-attr TileDB array."""
-        array_filename = self.array_path.construct_path(group_dirname, data_array_name)
+        array_filename = self.array_path.construct_path(domain_name, data_array_name)
 
         # Write to the array.
         data_vars = [self.data_model.variables[name] for name in data_var_names]
@@ -513,7 +514,7 @@ class MultiAttrTDBWriter(TDBWriter):
                 A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
 
     def create_multiattr_array(self, domain_var_names, domain_dims,
-                               group_dirname, data_array_name):
+                               domain_name, data_array_name):
         """Create one multi-attr TileDB array with an attr for each data variable."""
         # Create dimensions and domain for the multi-attr array.
         array_dims = [self._create_tdb_dim(dim_name, coords=False) for dim_name in domain_dims]
@@ -527,9 +528,10 @@ class MultiAttrTDBWriter(TDBWriter):
             attrs.append(attr)
 
         # Create the URI for the array.
-        array_filename = self.array_path.construct_path(group_dirname, data_array_name)
+        array_filename = self.array_path.construct_path(domain_name, data_array_name)
         # Create an empty array.
-        schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False, attrs=attrs)
+        schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False,
+                                    attrs=attrs, ctx=self.ctx)
         tiledb.Array.create(array_filename, schema)
 
     def create_domains(self, data_array_name='data'):
@@ -543,27 +545,28 @@ class MultiAttrTDBWriter(TDBWriter):
 
         """
         self._make_shape_domains()
-        
+
         for domain_name, domain_var_names in self.domains_mapping.items():
             domain_coord_names = domain_name.split(self.domain_separator)
 
             # Create group.
             group_dirname = self.array_path.construct_path(domain_name, '')
+            # XXX This might be failing because the TileDB root dir doesn't exist...
             # For a POSIX path we must explicitly create the group directory.
             if self.array_filepath is not None:
                 # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
                 self._create_tdb_directory(group_dirname)
-            # TODO it would be good to write the domain's dim names into the group meta.
-            tiledb.group_create(group_dirname)
+
+            tiledb.group_create(group_dirname, ctx=self.ctx)
 
             # Create and write arrays for each domain-describing coordinate.
-            self.create_domain_arrays(domain_coord_names, group_dirname, coords=True)
-            self.populate_domain_arrays(domain_coord_names, group_dirname)
+            self.create_domain_arrays(domain_coord_names, domain_name, coords=True)
+            self.populate_domain_arrays(domain_coord_names, domain_name)
 
             # Get data vars in this domain and create and populate a multi-attr array.
             self.create_multiattr_array(domain_var_names, domain_coord_names,
-                                        group_dirname, data_array_name)
-            self.populate_multiattr_array(data_array_name, domain_var_names, group_dirname)
+                                        domain_name, data_array_name)
+            self.populate_multiattr_array(data_array_name, domain_var_names, domain_name)
 
     def _scalar_step(self, base_point, append_dim, other):
         """
@@ -847,7 +850,7 @@ def write_array(array_filename, data_var,
 
 
 def write_multiattr_array(array_filename, data_vars,
-                          start_index=None, scalar=False, ctx=ctx):
+                          start_index=None, scalar=False, ctx=None):
     """Write to each attr in the array."""
     if start_index is None:
         start_index = 0
@@ -946,11 +949,11 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         logging.info(f'{other_data_model.netcdf_filename} - {e}')
 
     # Append the data from other.
-    data_array_path = f"{domain_path}/{data_array_name}"
+    data_array_path = f"{domain_path}{data_array_name}"
     write_multiattr_array(data_array_path, other_data_vars,
                           start_index=offset_inds, ctx=ctx)
     # Append the extra dimension points from other.
-    dim_array_path = f"{domain_path}/{append_dim}"
+    dim_array_path = f"{domain_path}{append_dim}"
     write_array(dim_array_path, other_dim_var,
                 start_index=offset_inds[append_axis], ctx=ctx)
 
