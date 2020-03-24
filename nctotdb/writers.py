@@ -11,6 +11,7 @@ import zarr
 from .data_model import NCDataModel
 from .grid_mappings import store_grid_mapping
 from .paths import PosixArrayPath, AzureArrayPath
+import .utils as utils
 
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
@@ -36,25 +37,20 @@ class Writer(object):
         self.unlimited_dims = unlimited_dims
         self.ctx = ctx  # TileDB Context object.
 
-        # Need either a local filepath or a remote container.
-        if self.array_filepath is None and self.container is None:
-            raise ValueError("Must supply one of: array filepath, azure container.")
-        if self.array_filepath is not None and self.container is not None:
-            raise ValueError("Must supply either: array filepath; azure container, but got both.")
-
         self._scalar_unlimited = None
+
+        # Need either a local filepath or a remote container.
+        utils.ensure_filepath_or_container(self.array_filepath, self.container)
 
         self._array_name = array_name
         if self._array_name is None:
             self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
         else:
             self.array_name = self._array_name
-
-        if self.array_filepath is not None:
-            self.array_path = PosixArrayPath(self.array_filepath, self.array_name)
-        elif self.container is not None:
-            self.array_path = AzureArrayPath(self.container, self.array_name,
-                                             ctx=self.ctx)
+        self.array_path = utils.filepath_generator(self.array_filepath,
+                                                   self.container,
+                                                   self.array_path,
+                                                   ctx=self.ctx)
 
     def _all_coords(self, variable):
         dim_coords = list(variable.dimensions)
@@ -971,8 +967,10 @@ def _make_multiattr_tile_helper(serialized_job):
             print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
 
         append_axis = append_axes[n]
-        domain_name = domain_path.split('/')[-2]
-        print(domain_name)
+        if domain_path.endswith('/'):
+            _, domain_name = os.path.split(domain_path[:-1])
+        else:
+            _, domain_name = os.path.split(domain_path)
         array_var_names = domains_mapping[domain_name]
         _make_multiattr_tile(other_data_model, domain_path, job_args.name,
                              array_var_names, append_axis, append_dim, job_args.scalar,
