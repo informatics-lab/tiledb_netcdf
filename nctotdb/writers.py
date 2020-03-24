@@ -1,5 +1,6 @@
 from collections import defaultdict, namedtuple
 import copy
+import json
 import logging
 import os
 
@@ -14,8 +15,8 @@ from .paths import PosixArrayPath, AzureArrayPath
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
                    'ind_stop', 'dim_stop', 'step', 'scalar',
-                   'verbose', 'job_number', 'n_jobs',
-                   'make_data_model', 'offset']
+                   'mapping', 'verbose', 'job_number', 'n_jobs',
+                   'make_data_model', 'offset', 'ctx']
 defaults = [None] * len(append_arg_list)
 AppendArgs = namedtuple('AppendArgs', append_arg_list, defaults=defaults)
 
@@ -39,7 +40,7 @@ class Writer(object):
         if self.array_filepath is None and self.container is None:
             raise ValueError("Must supply one of: array filepath, azure container.")
         if self.array_filepath is not None and self.container is not None:
-            raise ValueError("Must supply either: array filepath, azure container, but got both.")
+            raise ValueError("Must supply either: array filepath; azure container, but got both.")
 
         self._scalar_unlimited = None
 
@@ -579,34 +580,6 @@ class MultiAttrTDBWriter(TDBWriter):
         offset_point = other_data_model.variables[append_dim][:]
         return offset_point - base_point
 
-    def _make_tile_helper(self, job_args):
-        """
-        Helper function to collate the processing of each file in a multi-attr append.
-
-        """
-        domain_names = job_args.domain
-        append_dim = job_args.dim
-
-        other_data_model = NCDataModel(job_args.other)
-        other_data_model.classify_variables()
-        other_data_model.get_metadata()
-
-        for n, domain_name in enumerate(domain_names):
-            if job_args.verbose:
-                fn = other_data_model.netcdf_filename
-                job_no = job_args.job_number
-                n_jobs = job_args.n_jobs
-                n_domains = len(domain_names)
-                print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
-
-            append_axis = domain_name.split(self.domain_separator).index(append_dim)
-            domain_path = self.array_path.construct_path(domain_name, '')
-            array_var_names = self.domains_mapping[domain_name]
-            _make_multiattr_tile(other_data_model, domain_path, job_args.name,
-                                 array_var_names, append_axis, append_dim, job_args.scalar,
-                                 job_args.ind_stop, job_args.dim_stop, job_args.step,
-                                 scalar_offset=job_args.offset, ctx=self.ctx)
-
     def _get_scalar_points_and_offsets(self, others, append_dim, self_dim_stop):
         odp = []
         for other in others:
@@ -615,10 +588,12 @@ class MultiAttrTDBWriter(TDBWriter):
             ncdm.get_metadata()
             odp.append(ncdm.variables[append_dim][:])
         other_dim_points = np.array(odp)
-        return other_dim_points - self_dim_stop
+        offsets = other_dim_points - self_dim_stop
+        return offsets.data  # Only return the non-masked element of the masked array.
 
     def append(self, others, append_dim, data_array_name,
-               baseline=None, logfile=None, parallel=False, verbose=False):
+               baseline=None, logfile=None, parallel=False,
+               verbose=False, consolidate=True):
         """
         Append extra data as described by the contents of `others` onto
         an existing TileDB array along the axis defined by `append_dim`.
@@ -647,16 +622,18 @@ class MultiAttrTDBWriter(TDBWriter):
         # Check all domains for including the append dimension.
         domain_names = [d for d in self.domains_mapping.keys()
                         if append_dim in d.split(self.domain_separator)]
+        domain_paths = [self.array_path.construct_path(d, '') for d in domain_names]
+        append_axes = [d.split(self.domain_separator).index(append_dim) for d in domain_names]
 
         # Get starting dimension points and offsets.
         self_dim_var = self.data_model.variables[append_dim]
-        self_dim_points = copy.copy(self_dim_var[:])
+        self_dim_points = copy.copy(np.array(self_dim_var[:], ndmin=1))
 
         if append_dim == self._scalar_unlimited:
             if baseline is None:
                 raise ValueError('Cannot determine scalar step without a baseline dataset.')
             self_ind_stop = 0
-            self_dim_stop = self_dim_points
+            self_dim_stop = self_dim_points[0]
             offsets = self._get_scalar_points_and_offsets(others, append_dim, self_dim_stop)
             self_step = np.median(np.diff(offsets))
             scalar = True
@@ -666,36 +643,47 @@ class MultiAttrTDBWriter(TDBWriter):
                                                       [self_dim_start, self_dim_stop])
             offsets = None
             scalar = False
-
+    
         # For multidim / multi-attr appends this may be more complex.
         n_jobs = len(others)
+        # Prepare for serialization.
+        tdb_config = self.ctx.config().dict() if self.ctx is not None else None
         all_job_args = []
         for ct, other in enumerate(others):
             offset = offsets[ct] if offsets is not None else None
-            this_job_args = AppendArgs(other=other, domain=domain_names, name=data_array_name,
-                                       dim=append_dim, scalar=scalar, offset=offset,
+            this_job_args = AppendArgs(other=other, domain=domain_paths, name=data_array_name,
+                                       dim=append_dim, axis=append_axes, scalar=scalar,
+                                       offset=offset, mapping=self.domains_mapping,
                                        ind_stop=self_ind_stop, dim_stop=self_dim_stop, step=self_step,
-                                       verbose=verbose, job_number=ct, n_jobs=n_jobs)
+                                       verbose=verbose, job_number=ct, n_jobs=n_jobs, ctx=tdb_config)
             all_job_args.append(this_job_args)
 
-        if parallel:
-            # import dask.bag as db
-            # bag_of_jobs = db.from_sequence(job_args)
-            # bag_of_jobs.map(_make_tile_helper).compute()
-            raise NotImplementedError
-        else:
-            for job_args in all_job_args:
-                self._make_tile_helper(job_args)
+#         for field in this_job_args._fields:
+#             val = getattr(this_job_args, field)
+#             print(f'{field} = {val} ({type(val)!s})')
 
-        if n_jobs > 10:
+        # Serialize to JSON for network transmission.
+        serialized_jobs = map(lambda job: json.dumps(job._asdict()), all_job_args)
+        if parallel:
+            import dask.bag as db
+            bag_of_jobs = db.from_sequence(serialized_jobs)
+            bag_of_jobs.map(_make_multiattr_tile_helper).compute()
+        else:
+            for job_args in serialized_jobs:
+                _make_multiattr_tile_helper(job_args)
+
+        if consolidate and (n_jobs > 10):
             # Consolidate at the end of the append operations to make the resultant
             # array more performant.
+            config_key_name = "sm.consolidation.steps"
+            config_key_value = 100
             if self.ctx is None:
-                config = tiledb.Config({"sm.consolidation.steps": 100})
+                config = tiledb.Config({config_key_name: config_key_value})
                 ctx = tiledb.Ctx(config)
             else:
-                ctx = self.ctx
-                ctx.set_tag("sm.consolidation.steps", 100)  # Maybe??
+                cfg_dict = self.ctx.config().dict()
+                cfg_dict[config_key_name] = config_key_value
+                ctx = tiledb.Ctx(config=tiledb.Config(cfg_dict))
             for i, domain_name in enumerate(domain_names):
                 if verbose:
                     print()  # Clear last carriage-returned print statement.
@@ -916,11 +904,6 @@ def _progress_report(other_data_model, verbose, i, total):
         print(f'Processing {fn}...  ({ct}/{total}, {pc:0.1f}%)', end="\r")
 
 
-def _make_tile_helper(args):
-    """Helper method to call from a `map` operation and unpack the args."""
-    _make_tile(*args)
-
-
 def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
                          var_names, append_axis, append_dim, scalar_coord,
                          self_ind_stop, self_dim_stop, self_step,
@@ -956,6 +939,45 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     dim_array_path = f"{domain_path}{append_dim}"
     write_array(dim_array_path, other_dim_var,
                 start_index=offset_inds[append_axis], ctx=ctx)
+
+
+def _make_multiattr_tile_helper(serialized_job):
+    """
+    Helper function to collate the processing of each file in a multi-attr append.
+
+    """
+    # Deserialize job args.
+    job_args = AppendArgs(**json.loads(serialized_job))
+    if job_args.ctx is not None:
+        ctx = tiledb.Ctx(config=tiledb.Config(job_args.ctx))
+    else:
+        ctx = None
+
+    domains_mapping = job_args.mapping
+    domain_paths = job_args.domain
+    append_dim = job_args.dim
+    append_axes = job_args.axis
+
+    other_data_model = NCDataModel(job_args.other)
+    other_data_model.classify_variables()
+    other_data_model.get_metadata()
+
+    for n, domain_path in enumerate(domain_paths):
+        if job_args.verbose:
+            fn = other_data_model.netcdf_filename
+            job_no = job_args.job_number
+            n_jobs = job_args.n_jobs
+            n_domains = len(domain_paths)
+            print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
+
+        append_axis = append_axes[n]
+        domain_name = domain_path.split('/')[-2]
+        print(domain_name)
+        array_var_names = domains_mapping[domain_name]
+        _make_multiattr_tile(other_data_model, domain_path, job_args.name,
+                             array_var_names, append_axis, append_dim, job_args.scalar,
+                             job_args.ind_stop, job_args.dim_stop, job_args.step,
+                             scalar_offset=job_args.offset, ctx=ctx)
 
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
@@ -1002,3 +1024,8 @@ def _make_tile(other, domain_path, var_name, append_axis, append_dim,
     # Append the extra dimension points from other.
     dim_array_path = os.path.join(domain_path, append_dim)
     write_array(dim_array_path, other_dim_var, start_index=offset_inds[append_axis])
+
+
+def _make_tile_helper(args):
+    """Helper method to call from a `map` operation and unpack the args."""
+    _make_tile(*args)

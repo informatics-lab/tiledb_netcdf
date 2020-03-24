@@ -42,13 +42,14 @@ IRIS_FORBIDDEN_KEYS = set([
 class TileDBDataProxy:
     """A proxy to the data of a single TileDB array attribute."""
 
-    __slots__ = ("shape", "dtype", "path", "var_name", "handle_nan")
+    __slots__ = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
 
-    def __init__(self, shape, dtype, path, var_name, handle_nan=None):
+    def __init__(self, shape, dtype, path, var_name, ctx=None, handle_nan=None):
         self.shape = shape
         self.dtype = dtype
         self.path = path
         self.var_name = var_name
+        self.ctx = ctx
         self.handle_nan = handle_nan
 
     @property
@@ -56,7 +57,7 @@ class TileDBDataProxy:
         return len(self.shape)
 
     def __getitem__(self, keys):
-        with tiledb.open(self.path, 'r') as A:
+        with tiledb.open(self.path, 'r', ctx=self.ctx) as A:
             data = A[keys][self.var_name]
             if self.handle_nan is not None:
                 if self.handle_nan == 'mask':
@@ -111,11 +112,14 @@ class Reader(object):
 
 
 class TDBReader(Reader):
-    def __init__(self, input_filepath, storage_options=None, data_array_name=None):
+    def __init__(self, input_filepath,
+                 storage_options=None, data_array_name=None, ctx=None):
         super().__init__(input_filepath)
 
         self.storage_options = storage_options
         self.data_array_name = data_array_name
+        self.ctx = ctx
+
         self.groups = {}
         self._arrays = None
 
@@ -134,7 +138,7 @@ class TDBReader(Reader):
             self.get_groups_and_arrays()
 
     def _get_array_attrs(self, array_path):
-        with tiledb.open(array_path, "r") as A:
+        with tiledb.open(array_path, "r", ctx=self.ctx) as A:
             nattr = A.schema.nattr
             attr_names = [A.schema.attr(i).name for i in range(nattr)]
         return attr_names
@@ -168,16 +172,17 @@ class TDBReader(Reader):
             self.groups[group].append(item_path)
 
     def get_groups_and_arrays(self):
-        tiledb.walk(self.input_filepath, self.classifier)
+        tiledb.walk(self.input_filepath, self.classifier, ctx=self.ctx)
 
     def tdb_dir_contents(self, dir):
         contents = []
-        tiledb.ls(self.input_filepath, lambda obj_path, _: contents.append(obj_path))
+        tiledb.ls(self.input_filepath, lambda obj_path, _: contents.append(obj_path),
+                  ctx=self.ctx)
         return contents
 
     def _get_dim_coords(self, array_filepath):
         """Get the dimension describing coordinates from a TileDB array."""
-        with tiledb.open(array_filepath, 'r') as A:
+        with tiledb.open(array_filepath, 'r', ctx=self.ctx) as A:
             dims_string = A.meta['dimensions']
         return dims_string.split(',')
 
@@ -190,7 +195,7 @@ class TDBReader(Reader):
 
         """
         dim_filepath = os.path.join(self.input_filepath, group_name, dim_name)
-        with tiledb.open(dim_filepath, 'r') as D:
+        with tiledb.open(dim_filepath, 'r', ctx=self.ctx) as D:
             coord_points = D[:]
 
         # XXX won't handle repeated values (which should never appear in a dim coord).
@@ -257,7 +262,7 @@ class TDBReader(Reader):
         named_group_path, _ = os.path.split(named_array_path)
         named_group_arrays = self.groups[named_group_path]
 
-        with tiledb.open(named_array_path, 'r') as A:
+        with tiledb.open(named_array_path, 'r', ctx=self.ctx) as A:
             dim_names = A.meta['dimensions'].split(',')
 
         dim_paths = []
@@ -305,18 +310,18 @@ class TDBReader(Reader):
 
     def _from_tdb_array(self, array_path, naming_key,
                         array_name=None, to_dask=False, handle_nan=None):
-        with tiledb.open(array_path, 'r') as A:
+        """Retrieve data and metadata from a specified TileDB array."""
+        with tiledb.open(array_path, 'r', ctx=self.ctx) as A:
             metadata = {k: v for k, v in A.meta.items()}
             if array_name is None:
                 array_name = metadata[naming_key]
-            # This may well not maintain lazy data...
             if to_dask:
                 schema = A.schema
                 dtype = schema.attr(array_name).dtype
                 chunks = [schema.domain.dim(i).tile for i in range(schema.ndim)]
                 array_shape = self._array_shape(A.nonempty_domain())
                 proxy = TileDBDataProxy(array_shape, dtype, array_path, array_name,
-                                        handle_nan=handle_nan)
+                                        handle_nan=handle_nan, ctx=self.ctx)
                 points = da.from_array(proxy, chunks, name=naming_key)
             else:
                 array_inds = self._array_shape(A.nonempty_domain(), slices=True)
@@ -440,7 +445,7 @@ class TDBReader(Reader):
         cubes = []
         for data_path in data_paths:
             if attr_names is None:
-                with tiledb.open(data_path, 'r') as A:
+                with tiledb.open(data_path, 'r', ctx=self.ctx) as A:
                     attr_names = A.meta['dataset'].split(',')
             for attr_name in attr_names:
                 cube = self._load_data(data_path, group_dims, grid_mapping,
@@ -456,7 +461,7 @@ class TDBReader(Reader):
 
         """
         grid_mapping = None
-        with tiledb.open(data_array_path, 'r') as A:
+        with tiledb.open(data_array_path, 'r', ctx=self.ctx) as A:
             try:
                 grid_mapping_str = A.meta['grid_mapping']
             except KeyError:
