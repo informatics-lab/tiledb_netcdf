@@ -11,7 +11,7 @@ import zarr
 from .data_model import NCDataModel
 from .grid_mappings import store_grid_mapping
 from .paths import PosixArrayPath, AzureArrayPath
-import .utils as utils
+from . import utils
 
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
@@ -49,7 +49,7 @@ class Writer(object):
             self.array_name = self._array_name
         self.array_path = utils.filepath_generator(self.array_filepath,
                                                    self.container,
-                                                   self.array_path,
+                                                   self.array_name,
                                                    ctx=self.ctx)
 
     def _all_coords(self, variable):
@@ -654,10 +654,6 @@ class MultiAttrTDBWriter(TDBWriter):
                                        verbose=verbose, job_number=ct, n_jobs=n_jobs, ctx=tdb_config)
             all_job_args.append(this_job_args)
 
-#         for field in this_job_args._fields:
-#             val = getattr(this_job_args, field)
-#             print(f'{field} = {val} ({type(val)!s})')
-
         # Serialize to JSON for network transmission.
         serialized_jobs = map(lambda job: json.dumps(job._asdict()), all_job_args)
         if parallel:
@@ -684,6 +680,8 @@ class MultiAttrTDBWriter(TDBWriter):
                 if verbose:
                     print()  # Clear last carriage-returned print statement.
                     print(f'Consolidating array: {i+1}/{len(domain_names)}', end="\r")
+                else:
+                    print('Consolidating...')
                 array_path = self.array_path.construct_path(domain_name, data_array_name)
                 tiledb.consolidate(array_path, ctx=ctx)
 

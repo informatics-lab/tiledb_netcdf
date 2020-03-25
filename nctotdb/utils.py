@@ -1,6 +1,9 @@
 """Utility functions for `tiledb_netcdf`."""
 
 
+from .paths import PosixArrayPath, AzureArrayPath
+
+
 def ensure_filepath_or_container(filepath, container):
     """Ensure that either a filepath or a container has been specified, but not both."""
     # Need either a local filepath or a remote container.

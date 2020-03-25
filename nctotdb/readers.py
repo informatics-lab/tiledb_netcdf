@@ -13,7 +13,7 @@ import xarray as xr
 import zarr
 
 from .grid_mappings import GridMapping
-import .utils as utils
+from . import utils
 
 
 # Ref Iris: https://github.com/SciTools/iris/blob/master/lib/iris/_cube_coord_common.py#L75
@@ -127,10 +127,10 @@ class TDBReader(Reader):
         self._arrays = None
 
         # Need either a local filepath or a remote container.
-        utils.ensure_filepath_or_container(self.array_name, self.container)
+        utils.ensure_filepath_or_container(self.array_filepath, self.container)
         self.array_path = utils.filepath_generator(self.array_filepath,
                                                    self.container,
-                                                   self.array_path,
+                                                   self.array_name,
                                                    ctx=self.ctx)
 
     @property
@@ -518,6 +518,27 @@ class TDBReader(Reader):
                 raise ValueError(f'Type of array at {array_path!r} not known.')
         return dim_array_paths, data_array_paths
 
+    def _names_to_arrays(self, names):
+        """Convert one or more named datasets into groups to convert to cubes."""
+        if isinstance(names, str):
+            names = [names]
+        iter_groups = {}
+        for name in names:
+            # Extract a named dataset as a single Iris cube.
+            named_array_path, named_array_dims = self._extract(name)
+            if named_array_path.endswith('/'):
+                named_array_group_path, _ = os.path.split(named_array_path[:-1])
+            else:
+                named_array_group_path, _ = os.path.split(named_array_path)
+            if named_array_group_path in iter_groups.keys():
+                iter_groups[named_array_group_path].extend(named_array_dims + [named_array_path])
+            else:
+                iter_groups[named_array_group_path] = named_array_dims + [named_array_path]
+        result = {}
+        for k, v in iter_groups.items():
+            result[k] = list(set(v))
+        return result
+
     def to_iris(self, names=None, handle_nan=None):
         """
         Convert all arrays in a TileDB into one or more Iris cubes.
@@ -527,17 +548,7 @@ class TDBReader(Reader):
 
         # XXX will only return the first match if more than one cube matching `name` is found.
         if names is not None:
-            if isinstance(names, str):
-                names = [names]
-            iter_groups = {}
-            for name in names:
-                # Extract a named dataset as a single Iris cube.
-                named_array_path, named_array_dims = self._extract(name)
-                if named_array_path.endswith('/'):
-                    named_array_group_path, _ = os.path.split(named_array_path[:-1])
-                else:
-                    named_array_group_path, _ = os.path.split(named_array_path)
-                iter_groups[named_array_group_path] = named_array_dims + [named_array_path]
+            iter_groups = self._names_to_arrays(names)
         else:
             iter_groups = self.groups
 
@@ -550,7 +561,7 @@ class TDBReader(Reader):
                 group_cubes = self._load_multiattr_arrays(data_paths,
                                                           group_coords,
                                                           grid_mapping,
-                                                          attr_names=name,
+                                                          attr_names=names,
                                                           handle_nan=handle_nan)
             else:
                 group_cubes = self._load_group_arrays(data_paths, group_coords, grid_mapping,
