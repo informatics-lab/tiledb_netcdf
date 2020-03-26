@@ -17,7 +17,7 @@ from . import utils
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
                    'ind_stop', 'dim_stop', 'step', 'scalar',
                    'mapping', 'verbose', 'job_number', 'n_jobs',
-                   'make_data_model', 'offset', 'ctx']
+                   'make_data_model', 'offset', 'ctx', 'logfile']
 defaults = [None] * len(append_arg_list)
 AppendArgs = namedtuple('AppendArgs', append_arg_list, defaults=defaults)
 
@@ -587,6 +587,27 @@ class MultiAttrTDBWriter(TDBWriter):
         offsets = other_dim_points - self_dim_stop
         return offsets.data  # Only return the non-masked element of the masked array.
 
+    def _run_consolidate(self, domain_names, data_array_name, verbose=False):
+        # Consolidate at the end of the append operations to make the resultant
+        # array more performant.
+        config_key_name = "sm.consolidation.steps"
+        config_key_value = 100
+        if self.ctx is None:
+            config = tiledb.Config({config_key_name: config_key_value})
+            ctx = tiledb.Ctx(config)
+        else:
+            cfg_dict = self.ctx.config().dict()
+            cfg_dict[config_key_name] = config_key_value
+            ctx = tiledb.Ctx(config=tiledb.Config(cfg_dict))
+        for i, domain_name in enumerate(domain_names):
+            if verbose:
+                print()  # Clear last carriage-returned print statement.
+                print(f'Consolidating array: {i+1}/{len(domain_names)}', end="\r")
+            else:
+                print('Consolidating...')
+            array_path = self.array_path.construct_path(domain_name, data_array_name)
+            tiledb.consolidate(array_path, ctx=ctx)
+
     def append(self, others, append_dim, data_array_name,
                baseline=None, logfile=None, parallel=False,
                verbose=False, consolidate=True):
@@ -602,12 +623,6 @@ class MultiAttrTDBWriter(TDBWriter):
         TODO check if there's already data at the write inds and add an overwrite?
 
         """
-        if logfile is not None:
-            logging.basicConfig(filename=logfile,
-                                level=logging.DEBUG,
-                                format='%(asctime)s %(message)s',
-                                datefmt='%d/%m/%Y %H:%M:%S')
-
         make_data_model = False
         # Check what sort of thing `others` is.
         if isinstance(others, NCDataModel):
@@ -649,7 +664,7 @@ class MultiAttrTDBWriter(TDBWriter):
             offset = offsets[ct] if offsets is not None else None
             this_job_args = AppendArgs(other=other, domain=domain_paths, name=data_array_name,
                                        dim=append_dim, axis=append_axes, scalar=scalar,
-                                       offset=offset, mapping=self.domains_mapping,
+                                       offset=offset, mapping=self.domains_mapping, logfile=logfile,
                                        ind_stop=self_ind_stop, dim_stop=self_dim_stop, step=self_step,
                                        verbose=verbose, job_number=ct, n_jobs=n_jobs, ctx=tdb_config)
             all_job_args.append(this_job_args)
@@ -665,25 +680,7 @@ class MultiAttrTDBWriter(TDBWriter):
                 _make_multiattr_tile_helper(job_args)
 
         if consolidate and (n_jobs > 10):
-            # Consolidate at the end of the append operations to make the resultant
-            # array more performant.
-            config_key_name = "sm.consolidation.steps"
-            config_key_value = 100
-            if self.ctx is None:
-                config = tiledb.Config({config_key_name: config_key_value})
-                ctx = tiledb.Ctx(config)
-            else:
-                cfg_dict = self.ctx.config().dict()
-                cfg_dict[config_key_name] = config_key_value
-                ctx = tiledb.Ctx(config=tiledb.Config(cfg_dict))
-            for i, domain_name in enumerate(domain_names):
-                if verbose:
-                    print()  # Clear last carriage-returned print statement.
-                    print(f'Consolidating array: {i+1}/{len(domain_names)}', end="\r")
-                else:
-                    print('Consolidating...')
-                array_path = self.array_path.construct_path(domain_name, data_array_name)
-                tiledb.consolidate(array_path, ctx=ctx)
+            self._run_consolidate(domain_names, data_array_name, verbose=verbose)
 
     def fill_missing_points(self, append_dim_name, verbose=False):
         # Check all domains for including the append dimension.
@@ -908,22 +905,18 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     other_dim_var = other_data_model.variables[append_dim]
     other_dim_points = np.atleast_1d(other_dim_var[:])
 
+    if scalar_coord:
+        shape = [1] + list(data_var_shape)
+    else:
+        shape = data_var_shape
+
     offsets = []
-    try:
-        if scalar_coord:
-            shape = [1] + list(data_var_shape)
-        else:
-            shape = data_var_shape
-        
-        offset = _dim_offsets(
-            other_dim_points, self_ind_stop, self_dim_stop, self_step,
-            scalar=scalar_coord, points_offset=scalar_offset)
-        offsets = [0] * len(shape)
-        offsets[append_axis] = offset
-        offset_inds = _array_indices(shape, offsets)
-    
-    except Exception as e:
-        logging.info(f'{other_data_model.netcdf_filename} - {e}')
+    offset = _dim_offsets(
+        other_dim_points, self_ind_stop, self_dim_stop, self_step,
+        scalar=scalar_coord, points_offset=scalar_offset)
+    offsets = [0] * len(shape)
+    offsets[append_axis] = offset
+    offset_inds = _array_indices(shape, offsets)
 
     # Append the data from other.
     data_array_path = f"{domain_path}{data_array_name}"
@@ -947,33 +940,47 @@ def _make_multiattr_tile_helper(serialized_job):
     else:
         ctx = None
 
+    if job_args.logfile is not None:
+        logging.basicConfig(filename=job_args.logfile,
+                            level=logging.ERROR,
+                            format='%(asctime)s %(message)s',
+                            datefmt='%d/%m/%Y %H:%M:%S')
+
     domains_mapping = job_args.mapping
     domain_paths = job_args.domain
     append_dim = job_args.dim
     append_axes = job_args.axis
 
-    other_data_model = NCDataModel(job_args.other)
-    other_data_model.classify_variables()
-    other_data_model.get_metadata()
+    # Record what we've processed...
+    logging.info(f'Processing {job_args.other!r}')
 
-    for n, domain_path in enumerate(domain_paths):
-        if job_args.verbose:
-            fn = other_data_model.netcdf_filename
-            job_no = job_args.job_number
-            n_jobs = job_args.n_jobs
-            n_domains = len(domain_paths)
-            print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
+    # To improve fault tolerance all the processing happens in a try/except...
+    try:
+        other_data_model = NCDataModel(job_args.other)
+        other_data_model.classify_variables()
+        other_data_model.get_metadata()
 
-        append_axis = append_axes[n]
-        if domain_path.endswith('/'):
-            _, domain_name = os.path.split(domain_path[:-1])
-        else:
-            _, domain_name = os.path.split(domain_path)
-        array_var_names = domains_mapping[domain_name]
-        _make_multiattr_tile(other_data_model, domain_path, job_args.name,
-                             array_var_names, append_axis, append_dim, job_args.scalar,
-                             job_args.ind_stop, job_args.dim_stop, job_args.step,
-                             scalar_offset=job_args.offset, ctx=ctx)
+        for n, domain_path in enumerate(domain_paths):
+            if job_args.verbose:
+                fn = other_data_model.netcdf_filename
+                job_no = job_args.job_number
+                n_jobs = job_args.n_jobs
+                n_domains = len(domain_paths)
+                print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
+
+            append_axis = append_axes[n]
+            if domain_path.endswith('/'):
+                _, domain_name = os.path.split(domain_path[:-1])
+            else:
+                _, domain_name = os.path.split(domain_path)
+            array_var_names = domains_mapping[domain_name]
+            _make_multiattr_tile(other_data_model, domain_path, job_args.name,
+                                 array_var_names, append_axis, append_dim, job_args.scalar,
+                                 job_args.ind_stop, job_args.dim_stop, job_args.step,
+                                 scalar_offset=job_args.offset, ctx=ctx)
+    except Exception as e:
+        emsg = f'Could not process {job_args.other!r}. See below for details:\n{e}\n'
+        logging.error(emsg, exc_info=True)
 
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
