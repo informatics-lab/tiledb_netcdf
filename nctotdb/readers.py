@@ -13,6 +13,7 @@ import xarray as xr
 import zarr
 
 from .grid_mappings import GridMapping
+from . import utils
 
 
 # Ref Iris: https://github.com/SciTools/iris/blob/master/lib/iris/_cube_coord_common.py#L75
@@ -42,13 +43,14 @@ IRIS_FORBIDDEN_KEYS = set([
 class TileDBDataProxy:
     """A proxy to the data of a single TileDB array attribute."""
 
-    __slots__ = ("shape", "dtype", "path", "var_name", "handle_nan")
+    __slots__ = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
 
-    def __init__(self, shape, dtype, path, var_name, handle_nan=None):
+    def __init__(self, shape, dtype, path, var_name, ctx=None, handle_nan=None):
         self.shape = shape
         self.dtype = dtype
         self.path = path
         self.var_name = var_name
+        self.ctx = ctx
         self.handle_nan = handle_nan
 
     @property
@@ -56,7 +58,7 @@ class TileDBDataProxy:
         return len(self.shape)
 
     def __getitem__(self, keys):
-        with tiledb.open(self.path, 'r') as A:
+        with tiledb.open(self.path, 'r', ctx=self.ctx) as A:
             data = A[keys][self.var_name]
             if self.handle_nan is not None:
                 if self.handle_nan == 'mask':
@@ -88,8 +90,8 @@ class Reader(object):
                               'grid_longitude',
                               'projection_x_coordinate',
                               'projection_y_coordinate']
-    def __init__(self, input_filepath):
-        self.input_filepath = input_filepath
+    def __init__(self, array_filepath):
+        self.array_filepath = array_filepath
 
         self._artifact = None
 
@@ -111,13 +113,25 @@ class Reader(object):
 
 
 class TDBReader(Reader):
-    def __init__(self, input_filepath, storage_options=None, data_array_name=None):
-        super().__init__(input_filepath)
+    def __init__(self, array_name, array_filepath=None, container=None,
+                 storage_options=None, data_array_name=None, ctx=None):
+        super().__init__(array_filepath)
 
+        self.array_name = array_name
+        self.container = container
         self.storage_options = storage_options
         self.data_array_name = data_array_name
+        self.ctx = ctx
+
         self.groups = {}
         self._arrays = None
+
+        # Need either a local filepath or a remote container.
+        utils.ensure_filepath_or_container(self.array_filepath, self.container)
+        self.array_path = utils.filepath_generator(self.array_filepath,
+                                                   self.container,
+                                                   self.array_name,
+                                                   ctx=self.ctx)
 
     @property
     def arrays(self):
@@ -134,7 +148,7 @@ class TDBReader(Reader):
             self.get_groups_and_arrays()
 
     def _get_array_attrs(self, array_path):
-        with tiledb.open(array_path, "r") as A:
+        with tiledb.open(array_path, "r", ctx=self.ctx) as A:
             nattr = A.schema.nattr
             attr_names = [A.schema.attr(i).name for i in range(nattr)]
         return attr_names
@@ -145,7 +159,10 @@ class TDBReader(Reader):
         all_paths = chain.from_iterable([paths for paths in self.groups.values()])
         arrays = {}
         for path in all_paths:
-            _, array_name = os.path.split(path)
+            if path.endswith('/'):
+                _, array_name = os.path.split(path[:-1])
+            else:
+                _, array_name = os.path.split(path)
             if array_name == self.data_array_name:
                 attr_names = self._get_array_attrs(path)
                 for attr_name in attr_names:
@@ -164,20 +181,24 @@ class TDBReader(Reader):
         if item_type == 'group':
             self.groups[item_path] = []
         else:
-            group, _ = os.path.split(item_path)
+            if item_path.endswith('/'):
+                group, _ = os.path.split(item_path[:-1])
+            else:
+                group, _ = os.path.split(item_path)
             self.groups[group].append(item_path)
 
     def get_groups_and_arrays(self):
-        tiledb.walk(self.input_filepath, self.classifier)
+        tiledb.walk(self.array_path.basename, self.classifier, ctx=self.ctx)
 
     def tdb_dir_contents(self, dir):
         contents = []
-        tiledb.ls(self.input_filepath, lambda obj_path, _: contents.append(obj_path))
+        tiledb.ls(self.array_path.basename, lambda obj_path, _: contents.append(obj_path),
+                  ctx=self.ctx)
         return contents
 
     def _get_dim_coords(self, array_filepath):
         """Get the dimension describing coordinates from a TileDB array."""
-        with tiledb.open(array_filepath, 'r') as A:
+        with tiledb.open(array_filepath, 'r', ctx=self.ctx) as A:
             dims_string = A.meta['dimensions']
         return dims_string.split(',')
 
@@ -189,8 +210,8 @@ class TDBReader(Reader):
         TODO handle time coordinates (by loading the calendar from the array meta?).
 
         """
-        dim_filepath = os.path.join(self.input_filepath, group_name, dim_name)
-        with tiledb.open(dim_filepath, 'r') as D:
+        dim_filepath = self.array_path.construct_path(group_name, dim_name)
+        with tiledb.open(dim_filepath, 'r', ctx=self.ctx) as D:
             coord_points = D[:]
 
         # XXX won't handle repeated values (which should never appear in a dim coord).
@@ -221,7 +242,7 @@ class TDBReader(Reader):
         are not currently supported.
 
         """
-        array_filepath = os.path.join(self.input_filepath, group_name, array_name)
+        array_filepath = self.array_path.construct_path(group_name, array_name)
         array_dims = self._get_dim_coords(array_filepath)
 
         # Check that all the coords being spatially indexed are in the array's coords.
@@ -237,7 +258,7 @@ class TDBReader(Reader):
                 dim_slice = self._map_coords_inds(group_name, dim_name, coord_vals)
                 indices.append(dim_slice)
 
-        with tiledb.open(array_filepath, 'r') as A:
+        with tiledb.open(array_filepath, 'r', ctx=self.ctx) as A:
             subarray = A[tuple(indices)]
         return subarray
 
@@ -257,12 +278,13 @@ class TDBReader(Reader):
         named_group_path, _ = os.path.split(named_array_path)
         named_group_arrays = self.groups[named_group_path]
 
-        with tiledb.open(named_array_path, 'r') as A:
+        with tiledb.open(named_array_path, 'r', ctx=self.ctx) as A:
             dim_names = A.meta['dimensions'].split(',')
 
         dim_paths = []
         for dim_name in dim_names:
             for array_path in named_group_arrays:
+                array_path = array_path[:-1] if array_path.endswith('/') else array_path
                 if array_path.endswith(dim_name):
                     dim_paths.append(array_path)
                     break
@@ -305,18 +327,18 @@ class TDBReader(Reader):
 
     def _from_tdb_array(self, array_path, naming_key,
                         array_name=None, to_dask=False, handle_nan=None):
-        with tiledb.open(array_path, 'r') as A:
+        """Retrieve data and metadata from a specified TileDB array."""
+        with tiledb.open(array_path, 'r', ctx=self.ctx) as A:
             metadata = {k: v for k, v in A.meta.items()}
             if array_name is None:
                 array_name = metadata[naming_key]
-            # This may well not maintain lazy data...
             if to_dask:
                 schema = A.schema
                 dtype = schema.attr(array_name).dtype
                 chunks = [schema.domain.dim(i).tile for i in range(schema.ndim)]
                 array_shape = self._array_shape(A.nonempty_domain())
                 proxy = TileDBDataProxy(array_shape, dtype, array_path, array_name,
-                                        handle_nan=handle_nan)
+                                        handle_nan=handle_nan, ctx=self.ctx)
                 points = da.from_array(proxy, chunks, name=naming_key)
             else:
                 array_inds = self._array_shape(A.nonempty_domain(), slices=True)
@@ -440,7 +462,7 @@ class TDBReader(Reader):
         cubes = []
         for data_path in data_paths:
             if attr_names is None:
-                with tiledb.open(data_path, 'r') as A:
+                with tiledb.open(data_path, 'r', ctx=self.ctx) as A:
                     attr_names = A.meta['dataset'].split(',')
             for attr_name in attr_names:
                 cube = self._load_data(data_path, group_dims, grid_mapping,
@@ -456,7 +478,7 @@ class TDBReader(Reader):
 
         """
         grid_mapping = None
-        with tiledb.open(data_array_path, 'r') as A:
+        with tiledb.open(data_array_path, 'r', ctx=self.ctx) as A:
             try:
                 grid_mapping_str = A.meta['grid_mapping']
             except KeyError:
@@ -485,7 +507,7 @@ class TDBReader(Reader):
         dim_array_paths = []
         data_array_paths = []
         for array_path in group_array_paths:
-            with tiledb.open(array_path, 'r') as A:
+            with tiledb.open(array_path, 'r', ctx=self.ctx) as A:
                 metadata = {k: v for k, v in A.meta.items()}
             if metadata.get('dataset') is not None:
                 data_array_paths.append(array_path)
@@ -494,23 +516,39 @@ class TDBReader(Reader):
             else:
                 # Can't handle this!
                 raise ValueError(f'Type of array at {array_path!r} not known.')
-
         return dim_array_paths, data_array_paths
 
-    def to_iris(self, name=None, handle_nan=None):
+    def _names_to_arrays(self, names):
+        """Convert one or more named datasets into groups to convert to cubes."""
+        if isinstance(names, str):
+            names = [names]
+        iter_groups = {}
+        for name in names:
+            # Extract a named dataset as a single Iris cube.
+            named_array_path, named_array_dims = self._extract(name)
+            if named_array_path.endswith('/'):
+                named_array_group_path, _ = os.path.split(named_array_path[:-1])
+            else:
+                named_array_group_path, _ = os.path.split(named_array_path)
+            if named_array_group_path in iter_groups.keys():
+                iter_groups[named_array_group_path].extend(named_array_dims + [named_array_path])
+            else:
+                iter_groups[named_array_group_path] = named_array_dims + [named_array_path]
+        result = {}
+        for k, v in iter_groups.items():
+            result[k] = list(set(v))
+        return result
+
+    def to_iris(self, names=None, handle_nan=None):
         """
         Convert all arrays in a TileDB into one or more Iris cubes.
 
         """
         self.check_groups()
 
-        # XXX will only return the first match if more than one cube matching `name`
-        # is found.
-        if name is not None:
-            # Extract a named dataset as a single Iris cube.
-            named_array_path, named_array_dims = self._extract(name)
-            named_array_group_path, _ = os.path.split(named_array_path)
-            iter_groups = {named_array_group_path: named_array_dims + [named_array_path]}
+        # XXX will only return the first match if more than one cube matching `name` is found.
+        if names is not None:
+            iter_groups = self._names_to_arrays(names)
         else:
             iter_groups = self.groups
 
@@ -523,7 +561,7 @@ class TDBReader(Reader):
                 group_cubes = self._load_multiattr_arrays(data_paths,
                                                           group_coords,
                                                           grid_mapping,
-                                                          attr_names=name,
+                                                          attr_names=names,
                                                           handle_nan=handle_nan)
             else:
                 group_cubes = self._load_group_arrays(data_paths, group_coords, grid_mapping,
@@ -540,8 +578,8 @@ class TDBReader(Reader):
 
 
 class ZarrReader(Reader):
-    def __init__(self, input_filepath):
-        super().__init__(input_filepath)
+    def __init__(self, array_filepath):
+        super().__init__(array_filepath)
 
     def to_iris(self):
         intermediate = self.to_xarray()
@@ -549,5 +587,5 @@ class ZarrReader(Reader):
         return self.artifact
 
     def to_xarray(self):
-        self.artifact = xr.open_zarr(self.input_filepath)
+        self.artifact = xr.open_zarr(self.array_filepath)
         return self.artifact
