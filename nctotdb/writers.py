@@ -905,6 +905,10 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     other_dim_var = other_data_model.variables[append_dim]
     other_dim_points = np.atleast_1d(other_dim_var[:])
 
+    # Check for the dataset being scalar on the append dimension.
+    if not scalar_coord and len(other_dim_points) == 1:
+        scalar_coord = True
+
     if scalar_coord:
         shape = [1] + list(data_var_shape)
     else:
@@ -952,7 +956,7 @@ def _make_multiattr_tile_helper(serialized_job):
     append_axes = job_args.axis
 
     # Record what we've processed...
-    logging.info(f'Processing {job_args.other!r}')
+    logging.error(f'Processing {job_args.other!r} ({job_args.job_number+1}/{job_args.n_jobs})')
 
     # To improve fault tolerance all the processing happens in a try/except...
     try:
