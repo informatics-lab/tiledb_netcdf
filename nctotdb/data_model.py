@@ -8,24 +8,26 @@ import tiledb
 
 
 class NCDataModel(object):
-    data_var_names = []
-    dim_coord_names = []
-    scalar_coord_names = []
-    aux_coord_names = []
-    bounds = []
-    grid_mapping = []
-    cell_methods = []
-    cell_measures = []
-    unlimited_dim_coords = []
-
-    domains = []
-    domain_varname_mapping = None
-    varname_domain_mapping = None
-    shape = None
-    chunks = None
 
     def __init__(self, netcdf_filename):
         self.netcdf_filename = netcdf_filename
+
+        self.data_var_names = []
+        self.dim_coord_names = []
+        self.scalar_coord_names = []
+        self.aux_coord_names = []
+        self.bounds = []
+        self.grid_mapping = []
+        self.cell_methods = []
+        self.cell_measures = []
+        self.unlimited_dim_coords = []
+
+        self.domains = []
+        self.domain_varname_mapping = None
+        self.varname_domain_mapping = None
+        self.shape = None
+        self.chunks = None
+
         self._classified = False
 
     def open(self):
@@ -153,9 +155,6 @@ class NCDataModel(object):
 
         """
         # Work out the shapes of each variable. The most enclosing domains will have the highest ndim.
-        print(f'NetCDF file: {self._ncds.filepath()}\n')
-        print(f'Variable names: {self.variable_names}\n')
-        print(f'Data var names: {self.data_var_names}')
         ndims = np.array([len(self.variables[var_name].shape) for var_name in self.data_var_names])
         max_ndim = max(ndims)
         # Get the variables that describe the most enclosing domains (super domains).
