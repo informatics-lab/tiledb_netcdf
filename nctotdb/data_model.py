@@ -1,4 +1,5 @@
 from collections import namedtuple
+from contextlib import contextmanager
 import os
 
 import netCDF4
@@ -25,15 +26,28 @@ class NCDataModel(object):
 
     def __init__(self, netcdf_filename):
         self.netcdf_filename = netcdf_filename
-        self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
+        self._classified = False
 
+    def open(self):
+        self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
+        # Also set up key attributes.
         self.dimensions = self._ncds.dimensions
         self.dimension_names = list(self.dimensions.keys())
         self.variables = self._ncds.variables
         self.variable_names = list(self.variables.keys())
         self.ncattrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
 
-        self._classified = False
+    def close(self):
+        self._ncds.close()
+
+    @contextmanager
+    def classify(self):
+        try:
+            self.open()
+            self.classify_variables()
+            self.get_metadata()
+        finally:
+            self.close()
 
     def classify_variables(self):
         """
@@ -139,6 +153,9 @@ class NCDataModel(object):
 
         """
         # Work out the shapes of each variable. The most enclosing domains will have the highest ndim.
+        print(f'NetCDF file: {self._ncds.filepath()}\n')
+        print(f'Variable names: {self.variable_names}\n')
+        print(f'Data var names: {self.data_var_names}')
         ndims = np.array([len(self.variables[var_name].shape) for var_name in self.data_var_names])
         max_ndim = max(ndims)
         # Get the variables that describe the most enclosing domains (super domains).

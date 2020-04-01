@@ -921,6 +921,7 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     offsets = [0] * len(shape)
     offsets[append_axis] = offset
     offset_inds = _array_indices(shape, offsets)
+    logging.error(f'Append inds for {other_data_model.netcdf_filename!r}: {offset_inds}')
 
     # Append the data from other.
     data_array_path = f"{domain_path}{data_array_name}"
@@ -960,6 +961,7 @@ def _make_multiattr_tile_helper(serialized_job):
 
     # To improve fault tolerance all the processing happens in a try/except...
     try:
+        print(job_args.other)
         other_data_model = NCDataModel(job_args.other)
         other_data_model.classify_variables()
         other_data_model.get_metadata()
@@ -985,6 +987,8 @@ def _make_multiattr_tile_helper(serialized_job):
     except Exception as e:
         emsg = f'Could not process {job_args.other!r}. See below for details:\n{e}\n'
         logging.error(emsg, exc_info=True)
+        if job_args.logfile is None and job_args.verbose:
+            raise
 
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
