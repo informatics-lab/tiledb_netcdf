@@ -1,4 +1,5 @@
 from collections import namedtuple
+from contextlib import contextmanager
 import os
 
 import netCDF4
@@ -7,33 +8,49 @@ import tiledb
 
 
 class NCDataModel(object):
-    data_var_names = []
-    dim_coord_names = []
-    scalar_coord_names = []
-    aux_coord_names = []
-    bounds = []
-    grid_mapping = []
-    cell_methods = []
-    cell_measures = []
-    unlimited_dim_coords = []
-
-    domains = []
-    domain_varname_mapping = None
-    varname_domain_mapping = None
-    shape = None
-    chunks = None
 
     def __init__(self, netcdf_filename):
         self.netcdf_filename = netcdf_filename
-        self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
 
+        self.data_var_names = []
+        self.dim_coord_names = []
+        self.scalar_coord_names = []
+        self.aux_coord_names = []
+        self.bounds = []
+        self.grid_mapping = []
+        self.cell_methods = []
+        self.cell_measures = []
+        self.unlimited_dim_coords = []
+
+        self.domains = []
+        self.domain_varname_mapping = None
+        self.varname_domain_mapping = None
+        self.shape = None
+        self.chunks = None
+
+        self._classified = False
+
+    def open(self):
+        self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
+        # Also set up key attributes.
         self.dimensions = self._ncds.dimensions
         self.dimension_names = list(self.dimensions.keys())
         self.variables = self._ncds.variables
         self.variable_names = list(self.variables.keys())
         self.ncattrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
 
-        self._classified = False
+    def close(self):
+        self._ncds.close()
+
+    @contextmanager
+    def classify(self):
+        try:
+            self.open()
+            self.classify_variables()
+            self.get_metadata()
+            yield
+        finally:
+            self.close()
 
     def classify_variables(self):
         """

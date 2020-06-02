@@ -905,6 +905,10 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     other_dim_var = other_data_model.variables[append_dim]
     other_dim_points = np.atleast_1d(other_dim_var[:])
 
+    # Check for the dataset being scalar on the append dimension.
+    if not scalar_coord and len(other_dim_points) == 1:
+        scalar_coord = True
+
     if scalar_coord:
         shape = [1] + list(data_var_shape)
     else:
@@ -917,6 +921,8 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     offsets = [0] * len(shape)
     offsets[append_axis] = offset
     offset_inds = _array_indices(shape, offsets)
+    domain_name = domain_path.split('/')[-1]
+    logging.error(f'Indices for {other_data_model.netcdf_filename!r} ({domain_name}): {offset_inds}')
 
     # Append the data from other.
     data_array_path = f"{domain_path}{data_array_name}"
@@ -952,35 +958,39 @@ def _make_multiattr_tile_helper(serialized_job):
     append_axes = job_args.axis
 
     # Record what we've processed...
-    logging.info(f'Processing {job_args.other!r}')
+    logging.error(f'Processing {job_args.other!r} ({job_args.job_number+1}/{job_args.n_jobs})')
 
     # To improve fault tolerance all the processing happens in a try/except...
     try:
-        other_data_model = NCDataModel(job_args.other)
-        other_data_model.classify_variables()
-        other_data_model.get_metadata()
+        if isinstance(job_args.other, NCDataModel):
+            other_data_model = job_args.other
+        else:
+            other_data_model = NCDataModel(job_args.other)
 
-        for n, domain_path in enumerate(domain_paths):
-            if job_args.verbose:
-                fn = other_data_model.netcdf_filename
-                job_no = job_args.job_number
-                n_jobs = job_args.n_jobs
-                n_domains = len(domain_paths)
-                print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
+        with other_data_model.classify():
+            for n, domain_path in enumerate(domain_paths):
+                if job_args.verbose:
+                    fn = other_data_model.netcdf_filename
+                    job_no = job_args.job_number
+                    n_jobs = job_args.n_jobs
+                    n_domains = len(domain_paths)
+                    print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
 
-            append_axis = append_axes[n]
-            if domain_path.endswith('/'):
-                _, domain_name = os.path.split(domain_path[:-1])
-            else:
-                _, domain_name = os.path.split(domain_path)
-            array_var_names = domains_mapping[domain_name]
-            _make_multiattr_tile(other_data_model, domain_path, job_args.name,
-                                 array_var_names, append_axis, append_dim, job_args.scalar,
-                                 job_args.ind_stop, job_args.dim_stop, job_args.step,
-                                 scalar_offset=job_args.offset, ctx=ctx)
+                append_axis = append_axes[n]
+                if domain_path.endswith('/'):
+                    _, domain_name = os.path.split(domain_path[:-1])
+                else:
+                    _, domain_name = os.path.split(domain_path)
+                array_var_names = domains_mapping[domain_name]
+                _make_multiattr_tile(other_data_model, domain_path, job_args.name,
+                                     array_var_names, append_axis, append_dim, job_args.scalar,
+                                     job_args.ind_stop, job_args.dim_stop, job_args.step,
+                                     scalar_offset=job_args.offset, ctx=ctx)
     except Exception as e:
         emsg = f'Could not process {job_args.other!r}. See below for details:\n{e}\n'
         logging.error(emsg, exc_info=True)
+        if job_args.logfile is None and job_args.verbose:
+            raise
 
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
