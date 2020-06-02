@@ -48,6 +48,7 @@ class NCDataModel(object):
             self.open()
             self.classify_variables()
             self.get_metadata()
+            yield
         finally:
             self.close()
 
