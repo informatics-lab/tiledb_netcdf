@@ -138,9 +138,18 @@ class Writer(object):
                 print(f'No missing points in {coord_array_name!r}, nothing to do.')
 
 
-class TDBWriter(Writer):
+class _TDBWriter(Writer):
     """
-    Provides a class to write Python objects loaded from NetCDF to TileDB.
+    .. deprecated::
+        This class is deprecated in favour of the former `MultiAttrTDBWriter`,
+        now renamed to just `TDBWriter`. This preferred class provides all the
+        functionality of this class but with extra functionality for writing
+        multi-attr arrays as well.
+
+        This class is being maintained for now as it provides some of the
+        functionality the preferred class relies upon.
+
+    Write Python objects loaded from NetCDF to TileDB.
 
     Data Model: an instance of `NCDataModel` supplying data from a NetCDF file.
     Filepath: the filepath to save the tiledb array at.
@@ -402,9 +411,11 @@ class TDBWriter(Writer):
         self._fill_missing_points(coord_array_path, append_dim_name, verbose=verbose)
 
 
-class MultiAttrTDBWriter(TDBWriter):
+class TDBWriter(_TDBWriter):
     """
-    Provides a class to write Python objects loaded from NetCDF to TileDB.
+    Write Python objects loaded from NetCDF to TileDB, including writing TileDB
+    arrays with multiple data attributes from different NetCDF data variables
+    that are equally dimensioned.
 
     Data Model: an instance of `NCDataModel` supplying data from a NetCDF file.
     Filepath: the filepath to save the tiledb array at.
@@ -413,6 +424,33 @@ class MultiAttrTDBWriter(TDBWriter):
     def __init__(self, data_model,
                  array_filepath=None, container=None, array_name=None,
                  unlimited_dims=None, ctx=None, domain_separator=','):
+        """
+        Set up a writer to store the contents of one or more NetCDF data models
+        in a TileDB array.
+
+        Args:
+        * data_model: An `NCDataModel` object. Defines the contents of the base NetCDF file
+                      to write to TileDB.
+
+        Kwargs:
+        * array_filepath: posix-like path of location on disk to write the TileDB array.
+                          Either `array_filepath` or `container` *must* be provided, but not both.
+        * container: the name of an Azure Storage container to write the TileDB array to.
+                     Either `array_filepath` or `container` *must* be provided, but not both.
+        * array_name: the name of the root TileDB array to write. Defaults to the name of the
+                      data model's NetCDF file if not set. By specifying `array_name` as a
+                      relative path along with `container` you can write the TileDB array
+                      to a location other than the Azure Storage container's root.
+        * unlimited_dims: a named dimension that will have unlimited length in the written
+                          TileDB array. Typically this is set to a dimension you wish to append to.
+                          The string given here must be the name of a dimension in the supplied
+                          `data_model`.
+        * ctx: a TileDB Ctx (context) object, typically used to store metadata relating to the
+               Azure Storage container.
+        * domain_separator: a string that specifies the separator between dimensions in
+                            domain names. Defaults to `,`.
+
+        """
         super().__init__(data_model, array_filepath, container, array_name,
                          unlimited_dims, ctx)
 
