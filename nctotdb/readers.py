@@ -546,7 +546,8 @@ class TDBReader(Reader):
         """
         self.check_groups()
 
-        # XXX will only return the first match if more than one cube matching `name` is found.
+        # XXX will only return the first match if more than one cube matching `name`
+        # is found.
         if names is not None:
             iter_groups = self._names_to_arrays(names)
         else:
