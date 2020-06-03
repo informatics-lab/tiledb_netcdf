@@ -411,7 +411,7 @@ class _TDBWriter(Writer):
         self._fill_missing_points(coord_array_path, append_dim_name, verbose=verbose)
 
 
-class TDBWriter(_TDBWriter):
+class TileDBWriter(_TDBWriter):
     """
     Write Python objects loaded from NetCDF to TileDB, including writing TileDB
     arrays with multiple data attributes from different NetCDF data variables
