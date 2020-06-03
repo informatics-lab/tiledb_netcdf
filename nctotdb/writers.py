@@ -11,7 +11,7 @@ import zarr
 from .data_model import NCDataModel
 from .grid_mappings import store_grid_mapping
 from .paths import PosixArrayPath, AzureArrayPath
-import .utils as utils
+from . import utils
 
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
