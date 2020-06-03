@@ -112,7 +112,7 @@ class Reader(object):
         raise NotImplementedError
 
 
-class TDBReader(Reader):
+class TileDBReader(Reader):
     def __init__(self, array_name, array_filepath=None, container=None,
                  storage_options=None, data_array_name=None, ctx=None):
         super().__init__(array_filepath)
