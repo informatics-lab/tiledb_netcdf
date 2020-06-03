@@ -11,7 +11,7 @@ import zarr
 from .data_model import NCDataModel
 from .grid_mappings import store_grid_mapping
 from .paths import PosixArrayPath, AzureArrayPath
-from . import utils
+import .utils as utils
 
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
@@ -312,9 +312,8 @@ class TDBWriter(Writer):
             domain_name = self._public_domain_name(domain)
             group_dirname = self.array_path.construct_path(domain_name, '')
             if self.array_filepath is not None:
-                # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
+                # XXX TileDB does not automatically create group directories.
                 self._create_tdb_directory(group_dirname)
-            # TODO it would be good to write the domain's dim names into the group meta.
             tiledb.group_create(group_dirname)
 
             # Create and write arrays for each domain-describing coordinate.
@@ -542,7 +541,6 @@ class MultiAttrTDBWriter(TDBWriter):
 
         """
         self._make_shape_domains()
-
         for domain_name, domain_var_names in self.domains_mapping.items():
             domain_coord_names = domain_name.split(self.domain_separator)
 
@@ -654,7 +652,7 @@ class MultiAttrTDBWriter(TDBWriter):
                                                       [self_dim_start, self_dim_stop])
             offsets = None
             scalar = False
-    
+
         # For multidim / multi-attr appends this may be more complex.
         n_jobs = len(others)
         # Prepare for serialization.
@@ -933,6 +931,10 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     write_array(dim_array_path, other_dim_var,
                 start_index=offset_inds[append_axis], ctx=ctx)
 
+    dim_array_path = f"{domain_path}{append_dim}"
+    write_array(dim_array_path, other_dim_var,
+                start_index=offset_inds[append_axis], ctx=ctx)
+
 
 def _make_multiattr_tile_helper(serialized_job):
     """
@@ -991,7 +993,6 @@ def _make_multiattr_tile_helper(serialized_job):
         logging.error(emsg, exc_info=True)
         if job_args.logfile is None and job_args.verbose:
             raise
-
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
                self_ind_stop, self_dim_stop, self_step,
