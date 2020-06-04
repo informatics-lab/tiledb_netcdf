@@ -11,7 +11,7 @@ TileDB supports direct interaction with blob storage as provided by public cloud
 Currently this library only supports Azure Blob Storage containers, but we will add AWS support
 in a future release. If you'd like that support right now, do raise an issue 👆!
 
-### 1. Create a common data model
+#### 1. Create a common data model
 
 Use the data model class `NCDataModel` to create a data model:
 
