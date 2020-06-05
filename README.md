@@ -22,6 +22,22 @@ data_model = NCDataModel('/path/to/my/file.nc')
 data_model.populate()
 ```
 
+##### Manually modifying classification
+
+Classifying NetCDF variables is a long way from a precise science, and occasionally the
+process may fail to correctly classify a variable. In such a case you can manually modify
+the classification processes by using the following instead of calling `data_model.populate()`:
+
+```python
+data_model = NCDataModel('/path/to/my/file.nc')
+my_bespoke_data_var_name = 'foobarbaz'
+
+with data_model.open_netcdf():
+    data_model.classify_variables()
+    data_model.data_var_names = [my_bespoke_data_var_name]
+    data_model.get_metadata()
+```
+
 #### 2. Write the data model
 
 With a data model created, we can convert the contents of the NetCDF file to a supported
