@@ -28,29 +28,36 @@ class NCDataModel(object):
         self.shape = None
         self.chunks = None
 
+        self._nc_loaded = False
         self._classified = False
 
     def open(self):
+        # Open the NC file and retrieve key elements of it.
         self._ncds = netCDF4.Dataset(self.netcdf_filename, mode='r')
-        # Also set up key attributes.
         self.dimensions = self._ncds.dimensions
-        self.dimension_names = list(self.dimensions.keys())
         self.variables = self._ncds.variables
-        self.variable_names = list(self.variables.keys())
-        self.ncattrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
+        # Also set derived attributes, if not already done.
+        if not self._nc_loaded:
+            self.dimension_names = list(self.dimensions.keys())
+            self.variable_names = list(self.variables.keys())
+            self.ncattrs = {key: self._ncds.getncattr(key) for key in self._ncds.ncattrs()}
+            self._nc_loaded = True
 
     def close(self):
         self._ncds.close()
 
     @contextmanager
-    def classify(self):
+    def open_netcdf(self):
         try:
             self.open()
-            self.classify_variables()
-            self.get_metadata()
             yield
         finally:
             self.close()
+
+    def populate(self):
+        with self.open_netcdf():
+            self.classify_variables()
+            self.get_metadata()
 
     def classify_variables(self):
         """
