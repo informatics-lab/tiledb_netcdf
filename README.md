@@ -19,6 +19,7 @@ Use the data model class `NCDataModel` to create a data model:
 from nctotdb import NCDataModel
 
 data_model = NCDataModel('/path/to/my/file.nc')
+data_model.populate()
 ```
 
 #### 2. Write the data model
@@ -40,12 +41,11 @@ tiledb_save_path = '/path/to/my_tdb'
 tiledb_name = 'my_tiledb'
 unlimited_dims = 'z'  # Useful if you know you're going to need to append to the `z` dimension
 
-with data_model.classify():
-    writer = TileDBWriter(data_model,
-                          array_filepath=tiledb_save_path,
-                          array_name=tiledb_name,
-                          unlimited_dims=unlimited_dims)
-    writer.create_domains()
+writer = TileDBWriter(data_model,
+                      array_filepath=tiledb_save_path,
+                      array_name=tiledb_name,
+                      unlimited_dims=unlimited_dims)
+writer.create_domains()
 ```
 
 ##### 2b. Blob container
@@ -81,13 +81,12 @@ paths, other than that we must also pass the TileDB `Ctx` (context) object and s
 a container rather than a filepath to save to:
 
 ```python
-with data_model.classify():
-    writer = TileDBWriter(data_model,
-                          container=container,
-                          array_name=tiledb_name,
-                          unlimited_dims=unlimited_dims,
-                          ctx=ctx)
-    writer.create_domains()
+writer = TileDBWriter(data_model,
+                      container=container,
+                      array_name=tiledb_name,
+                      unlimited_dims=unlimited_dims,
+                      ctx=ctx)
+writer.create_domains()
 ```
 
 #### 3. Append
@@ -100,9 +99,29 @@ objects. If filepaths are specified they will be automatically converted to data
 append_files = ['file1.nc', 'file2.nc', 'file3.nc']
 data_array_name = 'data'  # The name of the data arrays in the TileDB array, typically `data`.
 
-with data_model.classify():
-    writer.append(append_files, unlimited_dims, data_array_name)
+writer.append(append_files, unlimited_dims, data_array_name)
 ```
+
+You can track the progress of append operations by enabling verbose mode:
+
+```python
+writer.append(append_files, unlimited_dims, data_array_name,
+              verbose=True)
+```
+
+If you have a large number of files to append or you simply want the append to complete
+faster, `tiledb_netcdf` can use dask to parallelise the append operation on a per-file basis.
+Assuming you have already set up a dask cluster, `my_cluster`:
+
+```python
+client = dask.distributed.Client(my_cluster)
+logfile = "append.log"
+writer.append(append_files, unlimited_dims, data_array_name,
+              parallel=True, logfile=logfile)
+```
+
+**Note:** it is recommended you also log parallel appends for error tracking, should
+anything go wrong during the append process.
 
 #### 4. Read Converted Arrays
 
@@ -139,6 +158,7 @@ from nctotdb import NCDataModel
 
 my_nc_filepath = '/path/to/my/file.nc'
 data_model = NCDataModel(my_nc_file)
+data_model.populate()
 ```
 
 #### 2. Write to Zarr
@@ -149,10 +169,9 @@ the data model. Here we write the contents to Zarr:
 ```python
 from nctotdb import ZarrWriter
 
-with data_model.classify():
-    zarr_writer = ZarrWriter(data_model, '/path/to/my_zarr',
-                             array_name='my_zarr')
-    zarr_writer.create_zarr()
+zarr_writer = ZarrWriter(data_model, '/path/to/my_zarr',
+                         array_name='my_zarr')
+zarr_writer.create_zarr()
 ```
 
 #### 3. Append
@@ -167,13 +186,12 @@ other_data_model = NCDataModel(my_other_nc_file)
 append_var_name = 'array_name'
 append_dim = 'dimension_name'
 
-with other_data_model.classify():
-    zarr_writer.append(other_data_model, append_var_name, append_dim)
+zarr_writer.append(other_data_model, append_var_name, append_dim)
 ```
 
 #### 4. Read Zarr
 
-And finally we can read the Zarr we created into Iris and Xarray:
+Finally we can read the Zarr we created into Iris and Xarray:
 
 ```python
 from nctotdb import ZarrReader
