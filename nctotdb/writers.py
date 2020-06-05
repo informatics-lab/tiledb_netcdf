@@ -77,26 +77,31 @@ class Writer(object):
         assert var_name in other_data_model.data_var_names, \
             f'Variable name {var_name!r} not found in other data model.'
 
-        self_var = self.data_model.variables[var_name]
-        self_var_coords = self._all_coords(self_var)
-        other_var = other_data_model.variables[var_name]
-        other_var_coords = self._all_coords(other_var)
-        # And is the append dimension valid?
-        assert append_dim in self_var_coords, \
-            f'Dimension {append_dim!r} not found in this data model.'
-        assert append_dim in other_var_coords, \
-            f'Dimension {append_dim!r} not found in other data model.'
+        with self.data_model.open_netcdf():
+            self_var = self.data_model.variables[var_name]
+            self_var_coords = self._all_coords(self_var)
+            # Is the append dimension valid?
+            assert append_dim in self_var_coords, \
+                f'Dimension {append_dim!r} not found in this data model.'
+
+        with other_data_model.open_netcdf():
+            other_var = other_data_model.variables[var_name]
+            other_var_coords = self._all_coords(other_var)
+            # Is the append dimension valid?
+            assert append_dim in other_var_coords, \
+                f'Dimension {append_dim!r} not found in other data model.'
 
     def _append_dimension(self, var_name, append_desc):
         """Determine the name and index of the dimension for the append operation."""
-        if not isinstance(append_desc, int):
-            # Find the append axis from the dimension name.
-            append_axis = self.data_model.variables[var_name].dimensions.index(append_desc)
-            append_dim = append_desc
-        else:
-            # Find the append dimension name from the axis.
-            append_axis = append_desc
-            append_dim = self.data_model.dimensions[append_axis]
+        with self.data_model.open_netcdf():
+            if not isinstance(append_desc, int):
+                # Find the append axis from the dimension name.
+                append_axis = self.data_model.variables[var_name].dimensions.index(append_desc)
+                append_dim = append_desc
+            else:
+                # Find the append dimension name from the axis.
+                append_axis = append_desc
+                append_dim = self.data_model.dimensions[append_axis]
         return append_axis, append_dim
 
     def _fill_missing_points(self, coord_array_path, coord_array_name, verbose=False):
@@ -751,22 +756,23 @@ class ZarrWriter(Writer):
         A domain is described by the tuple of dimensions that describe it.
 
         """
-        # Write domain variables and dimensions into group.
-        for var_name in var_names:
-            data_var = self.data_model.variables[var_name]
-            chunks = self.data_model.get_chunks(var_name)
-            data_array = self.group.create_dataset(var_name,
-                                                   shape=data_var.shape,
-                                                   chunks=chunks,
-                                                   dtype=data_var.dtype)
-            data_array[:] = data_var[...]
+        with self.data_model.open_netcdf():
+            # Write domain variables and dimensions into group.
+            for var_name in var_names:
+                data_var = self.data_model.variables[var_name]
+                chunks = self.data_model.get_chunks(var_name)
+                data_array = self.group.create_dataset(var_name,
+                                                    shape=data_var.shape,
+                                                    chunks=chunks,
+                                                    dtype=data_var.dtype)
+                data_array[:] = data_var[...]
 
-            # Set array attributes from ncattrs.
-            for ncattr in data_var.ncattrs():
-                data_array.attrs[ncattr] = data_var.getncattr(ncattr)
+                # Set array attributes from ncattrs.
+                for ncattr in data_var.ncattrs():
+                    data_array.attrs[ncattr] = data_var.getncattr(ncattr)
 
-            # Set attribute to specify var's dimensions.
-            data_array.attrs['_ARRAY_DIMENSIONS'] = data_var.dimensions
+                # Set attribute to specify var's dimensions.
+                data_array.attrs['_ARRAY_DIMENSIONS'] = data_var.dimensions
 
     def create_zarr(self):
         """
@@ -819,15 +825,16 @@ class ZarrWriter(Writer):
         # Work out the index of the append dimension.
         append_axis, append_dim = self._append_dimension(var_name, append_dim)
 
-        # Append data to the phenomenon.
-        other_data_var = other_data_model.variables[var_name]
-        getattr(self.group, var_name).append(other_data_var[...], axis=append_axis)
+        with other_data_model.open_netcdf():
+            # Append data to the phenomenon.
+            other_data_var = other_data_model.variables[var_name]
+            getattr(self.group, var_name).append(other_data_var[...], axis=append_axis)
 
-        # Append coordinate values to the append dimension.
-        other_dim = other_data_model.variables[append_dim]
-        getattr(self.group, append_dim).append(other_dim[...], axis=0)
+            # Append coordinate values to the append dimension.
+            other_dim = other_data_model.variables[append_dim]
+            getattr(self.group, append_dim).append(other_dim[...], axis=0)
 
-        
+
 ###################################################################################
 #                                                                                 #
 # Remove these functions from `TDBWriter` because most of them are static and it  #
