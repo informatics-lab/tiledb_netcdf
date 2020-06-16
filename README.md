@@ -141,12 +141,16 @@ anything go wrong during the append process.
 
 #### 4. Read Converted Arrays
 
-We can use the `Reader` classes to read our TileDB or Zarr arrays using Iris or Xarray:
+We can use the `Reader` classes to read our TileDB array with Iris or Xarray:
 
 ```python
-from nctotdb import TDBReader, ZarrReader
+from nctotdb import TDBReader
 
-tiledb_reader = TileDBReader('/path/to/my_tdb')
+# From a posix-like filepath:
+tiledb_reader = TileDBReader(tiledb_name, array_filepath=tiledb_save_path)
+
+# Or directly from Azure Blob:
+tiledb_reader = TileDBReader(tiledb_name, container=container, ctx=ctx)
 
 # TileDB to Iris.
 cubes = tiledb_reader.to_iris()  # Convert all TileDB arrays to Iris Cubes.
