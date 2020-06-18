@@ -144,7 +144,7 @@ anything go wrong during the append process.
 We can use the `Reader` classes to read our TileDB array with Iris or Xarray:
 
 ```python
-from nctotdb import TDBReader
+from nctotdb import TileDBReader
 
 # From a posix-like filepath:
 tiledb_reader = TileDBReader(tiledb_name, array_filepath=tiledb_save_path)
