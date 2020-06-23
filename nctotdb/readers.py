@@ -572,8 +572,8 @@ class TileDBReader(Reader):
         self.artifact = cubes[0] if len(cubes) == 1 else CubeList(cubes)
         return self.artifact
 
-    def to_xarray(self, name=None):
-        intermediate = self.to_iris(name=name)
+    def to_xarray(self, names=None):
+        intermediate = self.to_iris(names=names)
         self.artifact = xr.from_iris(intermediate)
         return self.artifact
 
