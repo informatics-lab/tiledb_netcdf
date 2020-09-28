@@ -932,7 +932,7 @@ def fillnan(xi, y0, diff):
 def _progress_report(other_data_model, verbose, i, total):
     """A helpful printout of append progress."""
     # XXX Not sure about this when called from a bag...
-    if verbose and i is not None and num is not None:
+    if verbose and i is not None and total is not None:
         fn = other_data_model.netcdf_filename
         ct = i + 1
         pc = 100 * (ct / total)
@@ -942,7 +942,7 @@ def _progress_report(other_data_model, verbose, i, total):
 def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
                          var_names, append_axis, append_dim, scalar_coord,
                          self_ind_stop, self_dim_stop, self_step,
-                         scalar_offset=None, ctx=None):
+                         scalar_offset=None, do_logging=False, ctx=None):
     """Process appending a single tile to `self`, per domain."""
     other_data_vars = [other_data_model.variables[var_name] for var_name in var_names]
     data_var_shape  = other_data_vars[0].shape
@@ -966,7 +966,8 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     offsets[append_axis] = offset
     offset_inds = _array_indices(shape, offsets)
     domain_name = domain_path.split('/')[-1]
-    logging.error(f'Indices for {other_data_model.netcdf_filename!r} ({domain_name}): {offset_inds}')
+    if do_logging:
+        logging.error(f'Indices for {other_data_model.netcdf_filename!r} ({domain_name}): {offset_inds}')
 
     # Append the data from other.
     data_array_path = f"{domain_path}{data_array_name}"
@@ -994,7 +995,9 @@ def _make_multiattr_tile_helper(serialized_job):
     else:
         ctx = None
 
+    do_logging = False
     if job_args.logfile is not None:
+        do_logging = True
         logging.basicConfig(filename=job_args.logfile,
                             level=logging.ERROR,
                             format='%(asctime)s %(message)s',
@@ -1006,7 +1009,8 @@ def _make_multiattr_tile_helper(serialized_job):
     append_axes = job_args.axis
 
     # Record what we've processed...
-    logging.error(f'Processing {job_args.other!r} ({job_args.job_number+1}/{job_args.n_jobs})')
+    if do_logging:
+        logging.error(f'Processing {job_args.other!r} ({job_args.job_number+1}/{job_args.n_jobs})')
 
     # To improve fault tolerance all the append processing happens in a try/except...
     try:
@@ -1033,7 +1037,7 @@ def _make_multiattr_tile_helper(serialized_job):
                 _make_multiattr_tile(other_data_model, domain_path, job_args.name,
                                      array_var_names, append_axis, append_dim, job_args.scalar,
                                      job_args.ind_stop, job_args.dim_stop, job_args.step,
-                                     scalar_offset=job_args.offset, ctx=ctx)
+                                     scalar_offset=job_args.offset, do_logging=do_logging, ctx=ctx)
     except Exception as e:
         emsg = f'Could not process {job_args.other!r}. Details:\n{e}\n'
         logging.error(emsg, exc_info=True)
