@@ -671,14 +671,14 @@ class TileDBWriter(_TDBWriter):
         if isinstance(others, (NCDataModel, str)):
             others = [others]
 
-        # Check all domains for including the append dimension.
-        domain_names = [d for d in self.domains_mapping.keys()
-                        if append_dim in d.split(self.domain_separator)]
-        domain_paths = [self.array_path.construct_path(d, '') for d in domain_names]
-        append_axes = [d.split(self.domain_separator).index(append_dim) for d in domain_names]
-
-        # Get starting dimension points and offsets.
         with self.data_model.open_netcdf():
+            # Check all domains for including the append dimension.
+            domain_names = [d for d in self.domains_mapping.keys()
+                            if append_dim in d.split(self.domain_separator)]
+            domain_paths = [self.array_path.construct_path(d, '') for d in domain_names]
+            append_axes = [d.split(self.domain_separator).index(append_dim) for d in domain_names]
+
+            # Get starting dimension points and offsets.
             self_dim_var = self.data_model.variables[append_dim]
             self_dim_points = copy.copy(np.array(self_dim_var[:], ndmin=1))
 
