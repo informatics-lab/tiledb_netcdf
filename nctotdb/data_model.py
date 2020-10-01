@@ -11,6 +11,7 @@ class NCDataModel(object):
 
     def __init__(self, netcdf_filename):
         self.netcdf_filename = netcdf_filename
+        self._ncds = None
 
         self.data_var_names = []
         self.dim_coord_names = []
@@ -53,6 +54,13 @@ class NCDataModel(object):
             yield
         finally:
             self.close()
+
+    def dataset_open(self):
+        """Check if the dataset has been loaded and is still open."""
+        result = False
+        if self._ncds is not None:
+            result = self._ncds.isopen()
+        return result
 
     def populate(self):
         with self.open_netcdf():

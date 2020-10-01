@@ -31,7 +31,7 @@ class Writer(object):
     def __init__(self, data_model,
                  array_filepath=None, container=None, array_name=None,
                  unlimited_dims=None, ctx=None):
-        self.data_model = data_model
+        self._data_model = data_model
         self.array_filepath = array_filepath
         self.container = container  # Azure container name.
         self.unlimited_dims = unlimited_dims
@@ -51,6 +51,12 @@ class Writer(object):
                                                    self.container,
                                                    self.array_name,
                                                    ctx=self.ctx)
+
+    @property
+    def data_model(self):
+        if not self._data_model.dataset_open():
+            self._data_model.open()
+        return self._data_model
 
     def _all_coords(self, variable):
         dim_coords = list(variable.dimensions)
@@ -77,12 +83,11 @@ class Writer(object):
         assert var_name in other_data_model.data_var_names, \
             f'Variable name {var_name!r} not found in other data model.'
 
-        with self.data_model.open_netcdf():
-            self_var = self.data_model.variables[var_name]
-            self_var_coords = self._all_coords(self_var)
-            # Is the append dimension valid?
-            assert append_dim in self_var_coords, \
-                f'Dimension {append_dim!r} not found in this data model.'
+        self_var = self.data_model.variables[var_name]
+        self_var_coords = self._all_coords(self_var)
+        # Is the append dimension valid?
+        assert append_dim in self_var_coords, \
+            f'Dimension {append_dim!r} not found in this data model.'
 
         with other_data_model.open_netcdf():
             other_var = other_data_model.variables[var_name]
@@ -93,15 +98,14 @@ class Writer(object):
 
     def _append_dimension(self, var_name, append_desc):
         """Determine the name and index of the dimension for the append operation."""
-        with self.data_model.open_netcdf():
-            if not isinstance(append_desc, int):
-                # Find the append axis from the dimension name.
-                append_axis = self.data_model.variables[var_name].dimensions.index(append_desc)
-                append_dim = append_desc
-            else:
-                # Find the append dimension name from the axis.
-                append_axis = append_desc
-                append_dim = self.data_model.dimensions[append_axis]
+        if not isinstance(append_desc, int):
+            # Find the append axis from the dimension name.
+            append_axis = self.data_model.variables[var_name].dimensions.index(append_desc)
+            append_dim = append_desc
+        else:
+            # Find the append dimension name from the axis.
+            append_axis = append_desc
+            append_dim = self.data_model.dimensions[append_axis]
         return append_axis, append_dim
 
     def _fill_missing_points(self, coord_array_path, coord_array_name, verbose=False):
@@ -316,29 +320,28 @@ class _TDBWriter(Writer):
         organised by domain.
 
         """
-        with self.data_model.open_netcdf():
-            for domain in self.data_model.domains:
-                # Get the data and coord variables in this domain.
-                domain_vars = self.data_model.domain_varname_mapping[domain]
-                # Defined for the sake of clarity (each `domain` is a list of its dim coords).
-                domain_coords = domain
+        for domain in self.data_model.domains:
+            # Get the data and coord variables in this domain.
+            domain_vars = self.data_model.domain_varname_mapping[domain]
+            # Defined for the sake of clarity (each `domain` is a list of its dim coords).
+            domain_coords = domain
 
-                # Create group.
-                domain_name = self._public_domain_name(domain)
-                group_dirname = self.array_path.construct_path(domain_name, '')
-                if self.array_filepath is not None:
-                    # XXX TileDB does not automatically create group directories.
-                    self._create_tdb_directory(group_dirname)
-                tiledb.group_create(group_dirname)
+            # Create group.
+            domain_name = self._public_domain_name(domain)
+            group_dirname = self.array_path.construct_path(domain_name, '')
+            if self.array_filepath is not None:
+                # XXX TileDB does not automatically create group directories.
+                self._create_tdb_directory(group_dirname)
+            tiledb.group_create(group_dirname)
 
-                # Create and write arrays for each domain-describing coordinate.
-                self.create_domain_arrays(domain_coords, group_dirname, coords=True)
-                self.populate_domain_arrays(domain_coords, group_dirname)
+            # Create and write arrays for each domain-describing coordinate.
+            self.create_domain_arrays(domain_coords, group_dirname, coords=True)
+            self.populate_domain_arrays(domain_coords, group_dirname)
 
-                # Get data vars in this domain and create an array for the domain.
-                self.create_domain_arrays(domain_vars, group_dirname)
-                # Populate this domain's array.
-                self.populate_domain_arrays(domain_vars, group_dirname)
+            # Get data vars in this domain and create an array for the domain.
+            self.create_domain_arrays(domain_vars, group_dirname)
+            # Populate this domain's array.
+            self.populate_domain_arrays(domain_vars, group_dirname)
 
     def append(self, others, var_name, append_dim,
               logfile=None, parallel=False, verbose=False):
@@ -584,29 +587,28 @@ class TileDBWriter(_TDBWriter):
             combination of dimensions.
 
         """
-        with self.data_model.open_netcdf():
-            self._make_shape_domains()
-            for domain_name, domain_var_names in self.domains_mapping.items():
-                domain_coord_names = domain_name.split(self.domain_separator)
+        self._make_shape_domains()
+        for domain_name, domain_var_names in self.domains_mapping.items():
+            domain_coord_names = domain_name.split(self.domain_separator)
 
-                # Create group.
-                group_dirname = self.array_path.construct_path(domain_name, '')
-                # XXX This might be failing because the TileDB root dir doesn't exist...
-                # For a POSIX path we must explicitly create the group directory.
-                if self.array_filepath is not None:
-                    # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
-                    self._create_tdb_directory(group_dirname)
+            # Create group.
+            group_dirname = self.array_path.construct_path(domain_name, '')
+            # XXX This might be failing because the TileDB root dir doesn't exist...
+            # For a POSIX path we must explicitly create the group directory.
+            if self.array_filepath is not None:
+                # TODO why is this necessary? Shouldn't tiledb create if this dir does not exist?
+                self._create_tdb_directory(group_dirname)
 
-                tiledb.group_create(group_dirname, ctx=self.ctx)
+            tiledb.group_create(group_dirname, ctx=self.ctx)
 
-                # Create and write arrays for each domain-describing coordinate.
-                self.create_domain_arrays(domain_coord_names, domain_name, coords=True)
-                self.populate_domain_arrays(domain_coord_names, domain_name)
+            # Create and write arrays for each domain-describing coordinate.
+            self.create_domain_arrays(domain_coord_names, domain_name, coords=True)
+            self.populate_domain_arrays(domain_coord_names, domain_name)
 
-                # Get data vars in this domain and create and populate a multi-attr array.
-                self.create_multiattr_array(domain_var_names, domain_coord_names,
-                                            domain_name, data_array_name)
-                self.populate_multiattr_array(data_array_name, domain_var_names, domain_name)
+            # Get data vars in this domain and create and populate a multi-attr array.
+            self.create_multiattr_array(domain_var_names, domain_coord_names,
+                                        domain_name, data_array_name)
+            self.populate_multiattr_array(data_array_name, domain_var_names, domain_name)
 
     def _scalar_step(self, base_point, append_dim, other):
         """
@@ -671,16 +673,15 @@ class TileDBWriter(_TDBWriter):
         if isinstance(others, (NCDataModel, str)):
             others = [others]
 
-        with self.data_model.open_netcdf():
-            # Check all domains for including the append dimension.
-            domain_names = [d for d in self.domains_mapping.keys()
-                            if append_dim in d.split(self.domain_separator)]
-            domain_paths = [self.array_path.construct_path(d, '') for d in domain_names]
-            append_axes = [d.split(self.domain_separator).index(append_dim) for d in domain_names]
+        # Check all domains for including the append dimension.
+        domain_names = [d for d in self.domains_mapping.keys()
+                        if append_dim in d.split(self.domain_separator)]
+        domain_paths = [self.array_path.construct_path(d, '') for d in domain_names]
+        append_axes = [d.split(self.domain_separator).index(append_dim) for d in domain_names]
 
-            # Get starting dimension points and offsets.
-            self_dim_var = self.data_model.variables[append_dim]
-            self_dim_points = copy.copy(np.array(self_dim_var[:], ndmin=1))
+        # Get starting dimension points and offsets.
+        self_dim_var = self.data_model.variables[append_dim]
+        self_dim_points = copy.copy(np.array(self_dim_var[:], ndmin=1))
 
         if append_dim == self._scalar_unlimited:
             if baseline is None:
@@ -756,23 +757,22 @@ class ZarrWriter(Writer):
         A domain is described by the tuple of dimensions that describe it.
 
         """
-        with self.data_model.open_netcdf():
-            # Write domain variables and dimensions into group.
-            for var_name in var_names:
-                data_var = self.data_model.variables[var_name]
-                chunks = self.data_model.get_chunks(var_name)
-                data_array = self.group.create_dataset(var_name,
-                                                    shape=data_var.shape,
-                                                    chunks=chunks,
-                                                    dtype=data_var.dtype)
-                data_array[:] = data_var[...]
+        # Write domain variables and dimensions into group.
+        for var_name in var_names:
+            data_var = self.data_model.variables[var_name]
+            chunks = self.data_model.get_chunks(var_name)
+            data_array = self.group.create_dataset(var_name,
+                                                shape=data_var.shape,
+                                                chunks=chunks,
+                                                dtype=data_var.dtype)
+            data_array[:] = data_var[...]
 
-                # Set array attributes from ncattrs.
-                for ncattr in data_var.ncattrs():
-                    data_array.attrs[ncattr] = data_var.getncattr(ncattr)
+            # Set array attributes from ncattrs.
+            for ncattr in data_var.ncattrs():
+                data_array.attrs[ncattr] = data_var.getncattr(ncattr)
 
-                # Set attribute to specify var's dimensions.
-                data_array.attrs['_ARRAY_DIMENSIONS'] = data_var.dimensions
+            # Set attribute to specify var's dimensions.
+            data_array.attrs['_ARRAY_DIMENSIONS'] = data_var.dimensions
 
     def create_zarr(self):
         """
