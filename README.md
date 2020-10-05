@@ -139,6 +139,44 @@ writer.append(append_files, unlimited_dims, data_array_name,
 **Note:** it is recommended you also log parallel appends for error tracking, should
 anything go wrong during the append process.
 
+##### 3a. Scalar Append
+
+One case of appending needs to be handled differently. This is the case where the datasets to
+be appended are scalar along the append dimension. For example, you may wish to append along the
+`time` dimension, but the base dataset and all files to be appended only contain a single
+(that is, scalar) time point. In this case a scalar append needs to be carried out.
+
+Typically the append algorithm uses the separation between points along the append dimension
+to calculate the offsets of all datasets to be appended. With only a single point along the
+append dimension this is not possible, so instead you need to also supply a file to the append
+call that allows the offset between files to be calculated. To ensure the correct offset is
+calculated, this file *must* describe the next step in the append dimension from the file
+originally used to create the TileDB array.
+
+The file used to calculate the offset is passed into the append operation using the
+`baseline` keyword argument. For example:
+
+```python
+append_files = ['file1.nc', 'file2.nc', 'file3.nc', 'file4.nc', 'file5.nc']
+data_array_name = 'data'
+
+writer.append(append_files, unlimited_dims, data_array_name,
+              baseline=append_files[0])
+```
+
+**Note:** The file used to calculate the offsets is not appended as well as being used to calculate
+the offset. You will need to include the offset file in the append files as well!
+
+**Note:** All such appends with a scalar append dimension must be supplied with a `baseline`
+file to calculate the offset, even if an append has already successfully been carried out.
+
+If you try and perform an append along a scalar dimension without providing a `baseline`
+file to calculate the offset, you will encounter an error message:
+
+```python-traceback
+ValueError: Cannot determine scalar step without a baseline dataset.
+```
+
 #### 4. Read Converted Arrays
 
 We can use the `Reader` classes to read our TileDB array with Iris or Xarray:
