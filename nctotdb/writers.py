@@ -625,9 +625,10 @@ class TileDBWriter(_TDBWriter):
         odp = []
         for other in others:
             ncdm = NCDataModel(other)
-            ncdm.classify_variables()
-            ncdm.get_metadata()
-            odp.append(ncdm.variables[append_dim][:])
+            with ncdm.open_netcdf():
+                ncdm.classify_variables()
+                ncdm.get_metadata()
+                odp.append(ncdm.variables[append_dim][:])
         other_dim_points = np.array(odp)
         offsets = other_dim_points - self_dim_stop
         return offsets.data  # Only return the non-masked element of the masked array.
@@ -689,7 +690,11 @@ class TileDBWriter(_TDBWriter):
             self_ind_stop = 0
             self_dim_stop = self_dim_points[0]
             offsets = self._get_scalar_points_and_offsets(others, append_dim, self_dim_stop)
-            self_step = np.median(np.diff(offsets))
+            if len(offsets) == 1:
+                self_step = offsets[0]
+            else:
+                # Smooth out any noise in slightly different offsets.
+                self_step = np.median(np.diff(offsets))
             scalar = True
         else:
             self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
