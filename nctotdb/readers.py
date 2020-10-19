@@ -13,6 +13,7 @@ import xarray as xr
 import zarr
 
 from .grid_mappings import GridMapping
+from .proxy import TileDBDataProxy
 from . import utils
 
 
@@ -37,44 +38,6 @@ IRIS_FORBIDDEN_KEYS = set([
         "scale_factor",
         "_FillValue",
     ])
-
-
-# Inspired by https://github.com/SciTools/iris/blob/master/lib/iris/fileformats/netcdf.py#L418.
-class TileDBDataProxy:
-    """A proxy to the data of a single TileDB array attribute."""
-
-    __slots__ = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
-
-    def __init__(self, shape, dtype, path, var_name, ctx=None, handle_nan=None):
-        self.shape = shape
-        self.dtype = dtype
-        self.path = path
-        self.var_name = var_name
-        self.ctx = ctx
-        self.handle_nan = handle_nan
-
-    @property
-    def ndim(self):
-        return len(self.shape)
-
-    def __getitem__(self, keys):
-        with tiledb.open(self.path, 'r', ctx=self.ctx) as A:
-            data = A[keys][self.var_name]
-            if self.handle_nan is not None:
-                if self.handle_nan == 'mask':
-                    data = np.ma.masked_invalid(data, np.nan)
-                elif type(self.handle_nan) in [int, float]:
-                    data = np.nan_to_num(data, nan=self.handle_nan, copy=False)
-                else:
-                    raise ValueError(f'Not a valid nan-handling approach: {self.handle_nan!r}.')
-        return data
-
-    def __getstate__(self):
-        return {attr: getattr(self, attr) for attr in self.__slots__}
-
-    def __setstate__(self, state):
-        for key, value in state.items():
-            setattr(self, key, value)
 
 
 class Reader(object):
@@ -348,7 +311,7 @@ class TileDBReader(Reader):
     def _load_dim(self, dim_path, grid_mapping):
         """
         Create an Iris DimCoord from a TileDB array describing a dimension.
-        
+
         # TODO not handled here: circular.
 
         """
