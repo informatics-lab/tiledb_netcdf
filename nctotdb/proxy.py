@@ -3,11 +3,13 @@ import numpy as np
 import tiledb
 
 
+SLOTS = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
+
 # Inspired by https://github.com/SciTools/iris/blob/master/lib/iris/fileformats/netcdf.py#L418.
 class TileDBDataProxy(object):
     """A proxy to the data of a single TileDB array attribute."""
 
-    __slots__ = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
+    __slots__ = SLOTS
 
     def __init__(self, shape, dtype, path, var_name, ctx=None, handle_nan=None):
         self.shape = shape
@@ -90,7 +92,9 @@ def deserialize_state(s_state):
     d_state = {}
     for key, s_value in s_state.items():
         if key == "shape":
-            if s_value["type"] == "tuple":
+            if key not in SLOTS:
+                continue
+            elif s_value["type"] == "tuple":
                 result = [slice(*l) for l in s_value["value"]]
                 d_value = tuple(result)
             elif s_value["type"] == "list":
