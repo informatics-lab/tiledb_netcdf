@@ -21,9 +21,7 @@ setuptools.setup(
     ],
     python_requires=">=3.7",
     install_requires=[
-        "netCDF4>=1.5.3",
-        "tiledb>=0.6.2",
-        "numpy>=1.18.5",
+        "tiledb>=0.6.6",
         "scitools-iris>=2.4.0",
         "xarray>=0.15.1",
         "zarr>=2.4.0"
