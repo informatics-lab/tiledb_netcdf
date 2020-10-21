@@ -21,6 +21,7 @@ setuptools.setup(
     ],
     python_requires=">=3.7",
     install_requires=[
+        "distributed>=2.28.0",
         "tiledb>=0.6.6",
         "scitools-iris>=2.4.0",
         "xarray>=0.15.1",
