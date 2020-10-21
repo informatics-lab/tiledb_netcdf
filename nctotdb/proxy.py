@@ -3,13 +3,11 @@ import numpy as np
 import tiledb
 
 
-SLOTS = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
-
 # Inspired by https://github.com/SciTools/iris/blob/master/lib/iris/fileformats/netcdf.py#L418.
 class TileDBDataProxy(object):
     """A proxy to the data of a single TileDB array attribute."""
 
-    __slots__ = SLOTS
+    __slots__ = ("shape", "dtype", "path", "var_name", "ctx", "handle_nan")
 
     def __init__(self, shape, dtype, path, var_name, ctx=None, handle_nan=None):
         self.shape = shape
@@ -80,21 +78,20 @@ class TileDBDataProxy(object):
         """Restore the complex object from the simple pickled dict."""
         deserialized_state = deserialize_state(state)
         for key, value in deserialized_state.items():
-            setattr(self, key, value)
+            if key in self.__slots__:
+                setattr(self, key, value)
 
 
 def deserialize_state(s_state):
     """
     Take a serialized dictionary of state and deserialize it to set state
-    on a TileDBDataProxy instance.
+    on a `TileDBDataProxy` instance.
 
     """
     d_state = {}
     for key, s_value in s_state.items():
         if key == "shape":
-            if key not in SLOTS:
-                continue
-            elif s_value["type"] == "tuple":
+            if s_value["type"] == "tuple":
                 result = [slice(*l) for l in s_value["value"]]
                 d_value = tuple(result)
             elif s_value["type"] == "list":
