@@ -1,4 +1,5 @@
 from distributed.protocol import dask_serialize, dask_deserialize
+import distributed.protocol.pickle as dpickle
 import numpy as np
 import tiledb
 
@@ -52,15 +53,7 @@ class TileDBDataProxy(object):
         for attr in self.__slots__:
             value = getattr(self, attr)
             if attr == "shape":
-                # `shape` could either be a simple list (of np.int!) or a tuple of slices...
-                result = {"type": None, "value": None}
-                if isinstance(value, tuple):
-                    result["type"] = "tuple"
-                    result["value"] = [[int(s.start), int(s.stop), int(s.step)] for s in value]
-                else:
-                    result["type"] = "list"
-                    result["value"] = [int(i) for i in value]
-                state[attr] = result
+                state[attr] = [int(i) for i in value]
             elif attr == "dtype":
                 state[attr] = np.dtype(value).str
             elif attr == "ctx":
@@ -90,15 +83,7 @@ def deserialize_state(s_state):
     """
     d_state = {}
     for key, s_value in s_state.items():
-        if key == "shape":
-            if s_value["type"] == "tuple":
-                result = [slice(*l) for l in s_value["value"]]
-                d_value = tuple(result)
-            elif s_value["type"] == "list":
-                d_value = s_value["value"]
-            else:
-                raise RuntimeError(f"Cannot deserialize {key!r} with type {s_value['type']!r}.")
-        elif key == "dtype":
+        if key == "dtype":
             d_value = np.dtype(s_value)
         elif key == "ctx":
             d_value = tiledb.Ctx(config=tiledb.Config(s_value)) if s_value is not None else None
@@ -115,5 +100,4 @@ def tdb_data_proxy_dumps(data_proxy):
 
 @dask_deserialize.register(TileDBDataProxy)
 def tdb_data_proxy_loads(header, frames):
-    deserialized_state = deserialize_state(header)
-    return TileDBDataProxy(**deserialized_state)
+    return dpickle.loads(header)
