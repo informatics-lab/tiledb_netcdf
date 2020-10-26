@@ -250,3 +250,79 @@ class NCDataModel(object):
 
         # Also create the inverse mapping of var_name --> domain.
         self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
+
+
+class _VariableLookup(object):
+    def __init__(self, dv_mapping, primary_dm):
+        self.dv_mapping = dv_mapping
+        self.primary_dm = primary_dm
+
+        self.dv_names = list(self.dv_mapping.keys)
+
+    def __getitem__(self, keys):
+        if keys in self.dv_names:
+            target_dm = self.dv_mapping[keys]
+        else:
+            target_dm = self.primary_dm
+
+        with target_dm.open_netcdf():
+            return target_dm.variables[keys]
+
+
+class NCDataModelGroup(object):
+    """
+    Combine multiple data model instances (each with only a single data variable)
+    into an amalgam data model containing multiple data variables.
+
+    It is assumed (but not currently programatically confirmed) that all data
+    model instances are otherwise identical (that is, all other metadata matches),
+    and only the data variable changes between instances. Failure to heed this
+    limitation will likely lead to broken TileDB / Zarr arrays.
+
+    """
+    def __init__(self, data_models):
+        self.data_models = data_models
+
+        self.verify()
+
+        self.primary_data_model = data_models[0]
+        self._data_var_names = None
+        self._data_vars_mapping = None
+
+        self.variables = _VariableLookup(self.data_vars_mapping,
+                                         self.primary_data_model)
+
+    def __getattr__(self, name):
+        return self.primary_data_model.name
+
+    @property
+    def data_var_names(self):
+        if self._data_var_names is None:
+            self.data_var_names = list(self.data_vars_mapping.keys())
+        return self._data_var_names
+
+    @data_var_names.setter
+    def data_var_names(self, value):
+        self._data_var_names = value
+
+    @property
+    def data_vars_mapping(self):
+        if self._data_vars_mapping is None:
+            self.data_vars_mapping = self._map_data_vars()
+        return self._data_vars_mapping
+
+    @data_vars_mapping.setter
+    def data_vars_mapping(self, value):
+        self._data_vars_mapping = value
+
+    def _map_data_vars(self):
+        """Create a mapping of data variable names to the data model supplying that data variable."""
+        dv_mapping = {}
+        for dm in self.data_models:
+            for data_var_name in dm.data_var_names:
+                dv_mapping[data_var_name] = dm
+        return dv_mapping
+
+    def verify(self):
+        """Not implemented!"""
+        pass
