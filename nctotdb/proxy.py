@@ -1,5 +1,4 @@
 from distributed.protocol import dask_serialize, dask_deserialize
-import distributed.protocol.pickle as dpickle
 import numpy as np
 import tiledb
 
@@ -91,13 +90,3 @@ def deserialize_state(s_state):
             d_value = s_value
         d_state[key] = d_value
     return d_state
-
-
-@dask_serialize.register(TileDBDataProxy)
-def tdb_data_proxy_dumps(data_proxy):
-    return data_proxy.serialize_state(), []
-
-
-@dask_deserialize.register(TileDBDataProxy)
-def tdb_data_proxy_loads(header, frames):
-    return dpickle.loads(header)
