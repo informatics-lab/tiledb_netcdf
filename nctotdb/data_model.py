@@ -252,21 +252,39 @@ class NCDataModel(object):
         self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
 
 
-class _VariableLookup(object):
-    def __init__(self, dv_mapping, primary_dm):
-        self.dv_mapping = dv_mapping
-        self.primary_dm = primary_dm
+class _VarDimLookup(object):
+    def __init__(self,
+                 primary_data_model,
+                 data_vars_mapping=None,
+                 variables=True):
+        self.primary_data_model = primary_data_model
+        self.data_vars_mapping = data_vars_mapping
+        self.variables = variables
+        self.data_model_attr = "variables" if self.variables else "dimensions"
 
-        self.dv_names = list(self.dv_mapping.keys)
+        self._data_var_names = None
+
+    @property
+    def data_var_names(self):
+        if self._data_var_names is None:
+            if self.data_vars_mapping is not None:
+                self.data_var_names = list(self.dv_mapping.keys())
+            else:
+                self.data_var_names = []
+        return self._data_var_names
+
+    @data_var_names.setter
+    def data_var_names(self, value):
+        self._data_var_names = value
 
     def __getitem__(self, keys):
-        if keys in self.dv_names:
-            target_dm = self.dv_mapping[keys]
+        if keys in self.data_var_names:
+            target_data_model = self.data_vars_mapping[keys]  # XXX: ???
         else:
-            target_dm = self.primary_dm
+            target_data_model = self.primary_data_model
 
-        with target_dm.open_netcdf():
-            return target_dm.variables[keys]
+        with target_data_model.open_netcdf():
+            return getattr(target_data_model, self.data_model_attr)[keys]
 
 
 class NCDataModelGroup(object):
@@ -285,12 +303,16 @@ class NCDataModelGroup(object):
 
         self.verify()
 
-        self.primary_data_model = data_models[0]
+        self.primary_data_model = self.data_models[0]
+        self.netcdf_filename = self.primary_data_model.netcdf_filename
+
         self._data_var_names = None
         self._data_vars_mapping = None
 
-        self.variables = _VariableLookup(self.data_vars_mapping,
-                                         self.primary_data_model)
+        self.variables = _VariableLookup(self.primary_data_model,
+                                         data_vars_mapping=self.data_vars_mapping)
+        self.dimensions = _VariableLookup(self.primary_data_model,
+                                          variables=False)
 
     def __getattr__(self, name):
         return self.primary_data_model.name
@@ -322,6 +344,30 @@ class NCDataModelGroup(object):
             for data_var_name in dm.data_var_names:
                 dv_mapping[data_var_name] = dm
         return dv_mapping
+
+    @contextmanager
+    def open_netcdf(self):
+        """
+        Spoof the `NCDataModel.open_netcdf()` API. Note that individual NC files
+        are opened on-demand.
+
+        """
+        try:
+            yield
+        finally:
+            pass
+
+    def open(self):
+        """Spoof the `NCDataModel.open()` API by opening the primary data model."""
+        self.primary_data_model.open()
+
+    def dataset_open(self):
+        """
+        Short-circuit the `NCDataModel.dataset_open()` API by claiming the data model
+        is *always* open, because we only open an individual dataset on-demand.
+
+        """
+        return True
 
     def verify(self):
         """Not implemented!"""
