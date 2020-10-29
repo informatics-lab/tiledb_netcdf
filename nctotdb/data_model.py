@@ -1,5 +1,6 @@
 from collections import namedtuple
 from contextlib import contextmanager
+from hashlib import md5
 import os
 
 import netCDF4
@@ -55,6 +56,10 @@ class NCDataModel(object):
         finally:
             self.close()
 
+    @property
+    def metadata_hash(self):
+        return metadata_hash(self)
+
     def dataset_open(self):
         """Check if the dataset has been loaded and is still open."""
         result = False
@@ -97,6 +102,9 @@ class NCDataModel(object):
             elif hasattr(variable, 'coordinates'):
                 self.data_var_names.append(variable_name)
                 classified_vars.append(variable_name)
+                # If it's a data variable it might also have cell methods.
+                if hasattr(variable, 'cell_methods'):
+                    self.cell_methods.append(variable.cell_methods)
 
             # Check if this variable is a coordinate - dimension or aux.
             elif hasattr(variable, 'dimensions'):
@@ -117,7 +125,6 @@ class NCDataModel(object):
             # Check if it's a cell measure variable.
             elif hasattr(variable, 'cell_measures'):
                 self.cell_measures.append(variable_name)
-                classified_vars.append(variable_name)
                 classified_vars.append(variable_name)
 
             # TODO: check if it's a cell method variable
@@ -252,6 +259,37 @@ class NCDataModel(object):
         self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
 
 
+def metadata_hash(data_model):
+    """
+    Produce a completely predictable hash from the metadata of a data model.
+    This will make it possible to correctly index an existing array to append
+    further data onto the correct index of the existing array.
+
+    The predictable metadata hash of the array is of the form:
+        ```name(s)_hash```
+
+    where:
+        * `name` is the name(s) of the dataset (CF standard_name if available)
+        * `hash` is an md5 hash of a standardised subset of the data model's metadata.
+
+    The metadata that makes up the hash is as follows:
+        * shape of dataset
+        * dimension coordinate names
+        * grid_mapping name
+        * string of cell methods applied to dataset.
+
+    """
+    names = ",".join(data_model.data_var_names)
+    dims = ",".join(data_model.dim_coord_names)
+    grid_mapping = ",".join(data_model.grid_mapping)
+    cell_methods = ",".join(data_model.cell_methods)
+
+    to_hash = f"{dims}_{data_model.shape}_{grid_mapping}_{cell_methods}"
+    metadata_hash = md5(to_hash.encode("utf-8")).hexdigest()
+
+    return f"{names}_{metadata_hash}"
+
+
 class _VarDimLookup(object):
     def __init__(self,
                  primary_data_model,
@@ -347,13 +385,9 @@ class NCDataModelGroup(object):
     def _map_data_vars(self):
         """Create a mapping of data variable names to the data model supplying that data variable."""
         dv_mapping = {}
-        all_names = []
         for dm in self.data_models:
             for name in dm.data_var_names:
-                count = all_names.count(name)
-                data_var_name = f"{name}_{count-1}" if count != 0 else name
-                dv_mapping[data_var_name] = [dm, name]
-                all_names.append(name)
+                dv_mapping[dm.metadata_hash] = [dm, name]
         return dv_mapping
 
     @contextmanager

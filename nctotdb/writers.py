@@ -485,9 +485,13 @@ class TileDBWriter(_TDBWriter):
         return separator.join(dimensions)
 
     def _get_attributes(self, data_var):
+        ncattrs = data_var.ncattrs()
         metadata = {}
-        for ncattr in data_var.ncattrs():
+        for ncattr in ncattrs:
             metadata[ncattr] = data_var.getncattr(ncattr)
+        # Add a fallback long_name in case of both standard_name and long_name being missing.
+        if "standard_name" not in ncattrs and "long_name" not in ncattrs:
+            metadata["long_name"] = data_var.name
         return metadata
 
     def _multi_attr_metadata(self, data_var_names):
