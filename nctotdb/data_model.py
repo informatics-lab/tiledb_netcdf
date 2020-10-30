@@ -56,10 +56,6 @@ class NCDataModel(object):
         finally:
             self.close()
 
-    @property
-    def metadata_hash(self):
-        return metadata_hash(self)
-
     def dataset_open(self):
         """Check if the dataset has been loaded and is still open."""
         result = False
@@ -126,10 +122,6 @@ class NCDataModel(object):
             elif hasattr(variable, 'cell_measures'):
                 self.cell_measures.append(variable_name)
                 classified_vars.append(variable_name)
-
-            # TODO: check if it's a cell method variable
-#             elif hasattr(variable, 'cell_measures'):
-#                 pass
 
         # What have we still missed?
         unclassified_vars = list(set(self.variable_names) - set(classified_vars))
@@ -259,7 +251,7 @@ class NCDataModel(object):
         self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
 
 
-def metadata_hash(data_model):
+def metadata_hash(data_model, name):
     """
     Produce a completely predictable hash from the metadata of a data model.
     This will make it possible to correctly index an existing array to append
@@ -273,21 +265,21 @@ def metadata_hash(data_model):
         * `hash` is an md5 hash of a standardised subset of the data model's metadata.
 
     The metadata that makes up the hash is as follows:
+        * name of data variable
         * shape of dataset
         * dimension coordinate names
         * grid_mapping name
         * string of cell methods applied to dataset.
 
     """
-    names = ",".join(data_model.data_var_names)
     dims = ",".join(data_model.dim_coord_names)
     grid_mapping = ",".join(data_model.grid_mapping)
     cell_methods = ",".join(data_model.cell_methods)
 
-    to_hash = f"{dims}_{data_model.shape}_{grid_mapping}_{cell_methods}"
+    to_hash = f"{name}_{dims}_{data_model.shape}_{grid_mapping}_{cell_methods}"
     metadata_hash = md5(to_hash.encode("utf-8")).hexdigest()
 
-    return f"{names}_{metadata_hash}"
+    return f"{name}_{metadata_hash}"
 
 
 class _VarDimLookup(object):
@@ -387,7 +379,8 @@ class NCDataModelGroup(object):
         dv_mapping = {}
         for dm in self.data_models:
             for name in dm.data_var_names:
-                dv_mapping[dm.metadata_hash] = [dm, name]
+                hashed_name = metadata_hash(dm, name)
+                dv_mapping[hashed_name] = [dm, name]
         return dv_mapping
 
     @contextmanager
