@@ -669,6 +669,7 @@ class TileDBWriter(_TDBWriter):
         Notes:
           * extends one dimension only
           * cannot create new dimensions, only extend existing dimensions
+          * `others` must be str of one or more files to append, not NCDataModel
 
         TODO support multiple axis appends.
         TODO check if there's already data at the write inds and add an overwrite?
@@ -676,7 +677,7 @@ class TileDBWriter(_TDBWriter):
         """
         make_data_model = False
         # Check what sort of thing `others` is.
-        if isinstance(others, (NCDataModel, str)):
+        if isinstance(others, str):
             others = [others]
 
         # Check all domains for including the append dimension.
@@ -955,8 +956,19 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
                          self_ind_stop, self_dim_stop, self_step,
                          scalar_offset=None, do_logging=False, ctx=None):
     """Process appending a single tile to `self`, per domain."""
-    other_data_vars = {var_name: other_data_model.variables[var_name] for var_name in var_names}
-    data_var_shape  = other_data_vars[0].shape
+    other_data_vars = {}
+    for data_var_name in other_data_model.data_var_names:
+        hashed_name = metadata_hash(other_data_model, data_var_name)
+        if hashed_name in var_names:
+            other_data_vars[hashed_name] = other_data_model.variables[data_var_name]
+
+    # Raise an error if no match in data vars between existing array and other_data_model.
+    if len(list(other_data_vars.keys())) == 0:
+        emsg = "Variable names in data model [{}] not present in existing array."
+        raise KeyError(emsg.format(', '.join(other_data_model.data_var_names)))
+
+    zeroth_data_var = list(other_data_vars.keys())[0]
+    data_var_shape  = other_data_vars[zeroth_data_var].shape
     other_dim_var = other_data_model.variables[append_dim]
     other_dim_points = np.atleast_1d(other_dim_var[:])
 
@@ -1030,6 +1042,7 @@ def _make_multiattr_tile_helper(serialized_job):
             other_data_model = job_args.other
         else:
             other_data_model = NCDataModel(job_args.other)
+            other_data_model.populate()
 
         with other_data_model.open_netcdf():
             for n, domain_path in enumerate(domain_paths):
