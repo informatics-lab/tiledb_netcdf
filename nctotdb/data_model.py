@@ -1,5 +1,6 @@
 from collections import namedtuple
 from contextlib import contextmanager
+from hashlib import md5
 import os
 
 import netCDF4
@@ -62,6 +63,10 @@ class NCDataModel(object):
             result = self._ncds.isopen()
         return result
 
+    @property
+    def data_vars_mapping(self):
+        return None
+
     def populate(self):
         with self.open_netcdf():
             self.classify_variables()
@@ -97,6 +102,9 @@ class NCDataModel(object):
             elif hasattr(variable, 'coordinates'):
                 self.data_var_names.append(variable_name)
                 classified_vars.append(variable_name)
+                # If it's a data variable it might also have cell methods.
+                if hasattr(variable, 'cell_methods'):
+                    self.cell_methods.append(variable.cell_methods)
 
             # Check if this variable is a coordinate - dimension or aux.
             elif hasattr(variable, 'dimensions'):
@@ -118,11 +126,6 @@ class NCDataModel(object):
             elif hasattr(variable, 'cell_measures'):
                 self.cell_measures.append(variable_name)
                 classified_vars.append(variable_name)
-                classified_vars.append(variable_name)
-
-            # TODO: check if it's a cell method variable
-#             elif hasattr(variable, 'cell_measures'):
-#                 pass
 
         # What have we still missed?
         unclassified_vars = list(set(self.variable_names) - set(classified_vars))
@@ -250,3 +253,164 @@ class NCDataModel(object):
 
         # Also create the inverse mapping of var_name --> domain.
         self.varname_domain_mapping = {vi: k for k, v in self.domain_varname_mapping.items() for vi in v}
+
+
+def metadata_hash(data_model, name):
+    """
+    Produce a completely predictable hash from the metadata of a data model.
+    This will make it possible to correctly index an existing array to append
+    further data onto the correct index of the existing array.
+
+    The predictable metadata hash of the array is of the form:
+        ```name(s)_hash```
+
+    where:
+        * `name` is the name(s) of the dataset (CF standard_name if available)
+        * `hash` is an md5 hash of a standardised subset of the data model's metadata.
+
+    The metadata that makes up the hash is as follows:
+        * name of data variable
+        * shape of dataset
+        * dimension coordinate names
+        * grid_mapping name
+        * string of cell methods applied to dataset.
+
+    """
+    dims = ",".join(data_model.dim_coord_names)
+    grid_mapping = ",".join(data_model.grid_mapping)
+    cell_methods = ",".join(data_model.cell_methods)
+
+    to_hash = f"{name}_{dims}_{data_model.shape}_{grid_mapping}_{cell_methods}"
+    metadata_hash = md5(to_hash.encode("utf-8")).hexdigest()
+
+    return f"{name}_{metadata_hash}"
+
+
+class _VarDimLookup(object):
+    def __init__(self,
+                 primary_data_model,
+                 data_vars_mapping=None,
+                 variables=True):
+        self.primary_data_model = primary_data_model
+        self.data_vars_mapping = data_vars_mapping
+        self.variables = variables
+        self.data_model_attr = "variables" if self.variables else "dimensions"
+
+        self._data_var_names = None
+
+    @property
+    def data_var_names(self):
+        if self._data_var_names is None:
+            if self.data_vars_mapping is not None:
+                self.data_var_names = list(self.data_vars_mapping.keys())
+            else:
+                self.data_var_names = []
+        return self._data_var_names
+
+    @data_var_names.setter
+    def data_var_names(self, value):
+        self._data_var_names = value
+
+    def __getitem__(self, keys):
+        if keys in self.data_var_names:
+            target = self.data_vars_mapping[keys]
+        else:
+            result = self.primary_data_model
+            target = [result, keys]
+
+        target_data_model, original_key = target
+        return getattr(target_data_model, self.data_model_attr)[original_key]
+
+
+class NCDataModelGroup(object):
+    """
+    Combine multiple data model instances (each with only a single data variable)
+    into an amalgam data model containing multiple data variables.
+
+    It is assumed (but not currently programatically confirmed) that all data
+    model instances are otherwise identical (that is, all other metadata matches),
+    and only the data variable changes between instances. Failure to heed this
+    limitation will likely lead to broken TileDB / Zarr arrays.
+
+    """
+    def __init__(self, data_models):
+        self.data_models = data_models
+
+        self.verify()
+
+        self.primary_data_model = self.data_models[0]
+        self.netcdf_filename = self.primary_data_model.netcdf_filename
+
+        self._data_var_names = None
+        self._data_vars_mapping = None
+
+        self.variables = _VarDimLookup(self.primary_data_model,
+                                       data_vars_mapping=self.data_vars_mapping)
+        self.dimensions = _VarDimLookup(self.primary_data_model,
+                                        variables=False)
+
+    def __getattr__(self, name):
+        """
+        Pass on all unhandled attribute get requests to the primary data model,
+        which is assumed to be representative of all encapsulated data models
+        with regard to other metadata.
+
+        """
+        return getattr(self.primary_data_model, name)
+
+    @property
+    def data_var_names(self):
+        if self._data_var_names is None:
+            self.data_var_names = list(self.data_vars_mapping.keys())
+        return self._data_var_names
+
+    @data_var_names.setter
+    def data_var_names(self, value):
+        self._data_var_names = value
+
+    @property
+    def data_vars_mapping(self):
+        if self._data_vars_mapping is None:
+            self.data_vars_mapping = self._map_data_vars()
+        return self._data_vars_mapping
+
+    @data_vars_mapping.setter
+    def data_vars_mapping(self, value):
+        self._data_vars_mapping = value
+
+    def _map_data_vars(self):
+        """Create a mapping of data variable names to the data model supplying that data variable."""
+        dv_mapping = {}
+        for dm in self.data_models:
+            for name in dm.data_var_names:
+                hashed_name = metadata_hash(dm, name)
+                dv_mapping[hashed_name] = [dm, name]
+        return dv_mapping
+
+    @contextmanager
+    def open_netcdf(self):
+        try:
+            self.open()
+            yield
+        finally:
+            self.close()
+
+    def open(self):
+        for data_model in self.data_models:
+            data_model.open()
+
+    def close(self):
+        for data_model in self.data_models:
+            data_model.close()
+
+    def dataset_open(self):
+        """
+        This 'dataset' (specifically a group of datasets) can only be considered
+        'open' if all the datasets that comprise it are open.
+
+        """
+        return all([dm.dataset_open() for dm in self.data_models])
+
+    def verify(self):
+        """Not implemented!"""
+        pass
