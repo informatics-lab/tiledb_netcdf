@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="tiledb_netcdf",
-    version="0.2.2",
+    version="0.2.3",
     author="Peter Killick",
     author_email="peter.killick@informaticslab.co.uk",
     description="An adapter to convert NetCDF files to TileDB or Zarr arrays",
