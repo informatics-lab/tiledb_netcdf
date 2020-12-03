@@ -63,6 +63,10 @@ class NCDataModel(object):
             result = self._ncds.isopen()
         return result
 
+    @property
+    def data_vars_mapping(self):
+        return None
+
     def populate(self):
         with self.open_netcdf():
             self.classify_variables()
