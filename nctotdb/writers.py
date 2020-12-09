@@ -634,11 +634,11 @@ class TileDBWriter(_TDBWriter):
         successive step along the scalar append dimension.
 
         """
-        odm = NCDataModel(other)
+        odm = NCDataModel(baseline)
         with odm.open_netcdf():
             odm.classify_variables()
             odm.get_metadata()
-            points = np.array(odm.variables[append_dim][:])
+            points = np.atleast_1d(odm.variables[append_dim][:])
         return points - self_dim_stop
 
     def _get_scalar_points_and_offsets(self, others, append_dim, self_dim_stop):
@@ -730,13 +730,25 @@ class TileDBWriter(_TDBWriter):
             offsets = None
             scalar = False
 
+        # Set up logging.
+        if logfile is not None:
+            logging.basicConfig(filename=job_args.logfile,
+                                level=logging.ERROR,
+                                format='%(asctime)s %(message)s',
+                                datefmt='%d/%m/%Y %H:%M:%S')
+
         # For multidim / multi-attr appends this may be more complex.
         n_jobs = len(others)
         # Prepare for serialization.
         tdb_config = self.ctx.config().dict() if self.ctx is not None else None
         all_job_args = []
         for ct, other in enumerate(others):
-            offset = offsets[ct] if offsets is not None else None
+            if offsets is None:
+                offset = None
+            elif len(offsets) == 1:
+                offset, = offsets
+            else:
+                offset = offsets[ct]
             this_job_args = AppendArgs(other=other, domain=domain_paths, name=data_array_name,
                                        dim=append_dim, axis=append_axes, scalar=scalar, group=group,
                                        offset=offset, mapping=self.domains_mapping, logfile=logfile,
@@ -996,10 +1008,10 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     for hashed_name in var_names:
         result = other_data_model.data_vars_mapping.get(hashed_name, None)
         if result is not None:
-            data_var_name = result[1]
-            other_data_vars[hashed_name] = other_data_model.variables[data_var_name]
+            other_data_vars[hashed_name] = other_data_model.variables[hashed_name]
         else:
-            other_data_vars[hashed_name] = None
+#             other_data_vars[hashed_name] = None
+            raise ValueError(f"No data var {hashed_name!r}!")
 
     # Raise an error if no match in data vars between existing array and other_data_model.
     if len(list(other_data_vars.keys())) == 0:
@@ -1040,11 +1052,6 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     write_array(dim_array_path, other_dim_var,
                 start_index=offset_inds[append_axis], ctx=ctx)
 
-    # I think this got added spuriously...
-    # dim_array_path = f"{domain_path}{append_dim}"
-    # write_array(dim_array_path, other_dim_var,
-    #             start_index=offset_inds[append_axis], ctx=ctx)
-
 
 def _make_multiattr_tile_helper(serialized_job):
     """
@@ -1058,13 +1065,7 @@ def _make_multiattr_tile_helper(serialized_job):
     else:
         ctx = None
 
-    do_logging = False
-    if job_args.logfile is not None:
-        do_logging = True
-        logging.basicConfig(filename=job_args.logfile,
-                            level=logging.ERROR,
-                            format='%(asctime)s %(message)s',
-                            datefmt='%d/%m/%Y %H:%M:%S')
+    do_logging = job_args.logfile is not None
 
     domains_mapping = job_args.mapping
     domain_paths = job_args.domain
@@ -1081,7 +1082,7 @@ def _make_multiattr_tile_helper(serialized_job):
         if group:
             # Make an NCDataModelGroup from the list of paths in `other`.
             odms = []
-            for fn in other:
+            for fn in job_args.other:
                 odm = NCDataModel(fn)
                 odm.populate()
                 odms.append(odm)
