@@ -290,11 +290,13 @@ class _VarDimLookup(object):
     def __init__(self,
                  primary_data_model,
                  data_vars_mapping=None,
-                 variables=True):
+                 variables=True,
+                 can_be_none=False):
         self.primary_data_model = primary_data_model
         self.data_vars_mapping = data_vars_mapping
         self.variables = variables
         self.data_model_attr = "variables" if self.variables else "dimensions"
+        self.can_be_none = can_be_none
 
         self._data_var_names = None
 
@@ -319,7 +321,14 @@ class _VarDimLookup(object):
             target = [result, keys]
 
         target_data_model, original_key = target
-        return getattr(target_data_model, self.data_model_attr)[original_key]
+        try:
+            result = getattr(target_data_model, self.data_model_attr)[original_key]
+        except KeyError:
+            if self.can_be_none:
+                result = None
+            else:
+                raise
+        return result
 
 
 class NCDataModelGroup(object):
@@ -334,18 +343,18 @@ class NCDataModelGroup(object):
 
     """
     def __init__(self, data_models):
-        self.data_models = data_models
+        self._data_models = data_models
 
+        self._load()
         self.verify()
-
-        self.primary_data_model = self.data_models[0]
-        self.netcdf_filename = self.primary_data_model.netcdf_filename
 
         self._data_var_names = None
         self._data_vars_mapping = None
 
+        self.netcdf_filename = self.primary_data_model.netcdf_filename
         self.variables = _VarDimLookup(self.primary_data_model,
-                                       data_vars_mapping=self.data_vars_mapping)
+                                       data_vars_mapping=self.data_vars_mapping,
+                                       can_be_none=None in self.data_models)
         self.dimensions = _VarDimLookup(self.primary_data_model,
                                         variables=False)
 
@@ -357,6 +366,21 @@ class NCDataModelGroup(object):
 
         """
         return getattr(self.primary_data_model, name)
+
+    @property
+    def data_models(self):
+        return self._data_models
+
+    @data_models.setter
+    def data_models(self, value):
+        self._data_models = value
+
+    @property
+    def primary_data_model(self):
+        """The 'primary' data model is the first non-None data model in the list."""
+        for data_model in self.data_models:
+            if data_model is not None:
+                return data_model
 
     @property
     def data_var_names(self):
@@ -382,9 +406,10 @@ class NCDataModelGroup(object):
         """Create a mapping of data variable names to the data model supplying that data variable."""
         dv_mapping = {}
         for dm in self.data_models:
-            for name in dm.data_var_names:
-                hashed_name = metadata_hash(dm, name)
-                dv_mapping[hashed_name] = [dm, name]
+            if dm is not None:
+                for name in dm.data_var_names:
+                    hashed_name = metadata_hash(dm, name)
+                    dv_mapping[hashed_name] = [dm, name]
         return dv_mapping
 
     @contextmanager
@@ -395,13 +420,29 @@ class NCDataModelGroup(object):
         finally:
             self.close()
 
+    def _load(self):
+        """Ensure all data models passed to the constructor are DataModel objects."""
+        dms = []
+        for data_model in self.data_models:
+            if isinstance(data_model, str):
+                try:
+                    dm = NCDataModel(data_model)
+                    dm.populate()
+                except (FileNotFoundError, AttributeError):
+                    dm = None
+            else:
+                dms.append(data_model)
+        self.data_models = dms
+
     def open(self):
         for data_model in self.data_models:
-            data_model.open()
+            if data_model is not None:
+                data_model.open()
 
     def close(self):
         for data_model in self.data_models:
-            data_model.close()
+            if data_model is not None:
+                data_model.close()
 
     def dataset_open(self):
         """
@@ -409,7 +450,7 @@ class NCDataModelGroup(object):
         'open' if all the datasets that comprise it are open.
 
         """
-        return all([dm.dataset_open() for dm in self.data_models])
+        return all([dm.dataset_open() for dm in self.data_models if dm is not None])
 
     def verify(self):
         """Not implemented!"""

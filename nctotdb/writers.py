@@ -582,7 +582,7 @@ class TileDBWriter(_TDBWriter):
                                     attrs=attrs, ctx=self.ctx)
         tiledb.Array.create(array_filename, schema)
 
-    def create_domains(self, data_array_name='data'):
+    def create_domains(self, data_array_name='data', domains_mapping=None):
         """
         Create one TileDB domain for each unique shape / dimensions combination
         in the input Data Model. Each domain will contain:
@@ -593,7 +593,9 @@ class TileDBWriter(_TDBWriter):
 
         """
         self._make_shape_domains()
-        for domain_name, domain_var_names in self.domains_mapping.items():
+        domains_mapping = self.domains_mapping if domains_mapping is None
+
+        for domain_name, domain_var_names in domains_mapping.items():
             domain_coord_names = domain_name.split(self.domain_separator)
 
             # Create group.
