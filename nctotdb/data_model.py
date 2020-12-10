@@ -348,6 +348,7 @@ class NCDataModelGroup(object):
         self._load()
         self.verify()
 
+        self._primary_data_model = None
         self._data_var_names = None
         self._data_vars_mapping = None
 
@@ -378,9 +379,17 @@ class NCDataModelGroup(object):
     @property
     def primary_data_model(self):
         """The 'primary' data model is the first non-None data model in the list."""
-        for data_model in self.data_models:
-            if data_model is not None:
-                return data_model
+        if self._primary_data_model is None:
+            result = None
+            for data_model in self.data_models:
+                if data_model is not None:
+                    result = data_model
+                    break
+        self.primary_data_model = result
+
+    @primary_data_model.setter
+    def primary_data_model(self, value):
+        self._primary_data_model = value
 
     @property
     def data_var_names(self):
@@ -421,7 +430,7 @@ class NCDataModelGroup(object):
             self.close()
 
     def _load(self):
-        """Ensure all data models passed to the constructor are DataModel objects."""
+        """Ensure all data models passed to the constructor are DataModel objects or None."""
         dms = []
         for data_model in self.data_models:
             if isinstance(data_model, str):
@@ -430,6 +439,7 @@ class NCDataModelGroup(object):
                     dm.populate()
                 except (FileNotFoundError, AttributeError):
                     dm = None
+                dms.append(dm)
             else:
                 dms.append(data_model)
         self.data_models = dms
