@@ -30,8 +30,29 @@ class NCDataModel(object):
         self.shape = None
         self.chunks = None
 
+        self._data_vars_mapping = None
         self._nc_loaded = False
         self._classified = False
+
+    @property
+    def data_vars_mapping(self):
+        if self._data_vars_mapping is None:
+            if not self._classified:
+                self.populate()
+            self.data_vars_mapping = self._map_data_vars()
+        return self._data_vars_mapping
+
+    @data_vars_mapping.setter
+    def data_vars_mapping(self, value):
+        self._data_vars_mapping = value
+
+    def _map_data_vars(self):
+        """Create a mapping of data variable names to the data model supplying that data variable."""
+        dv_mapping = {}
+        for name in self.data_var_names:
+            hashed_name = metadata_hash(self, name)
+            dv_mapping[hashed_name] = [self, name]
+        return dv_mapping
 
     def open(self):
         # Open the NC file and retrieve key elements of it.

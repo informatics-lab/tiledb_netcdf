@@ -1007,12 +1007,12 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     """Process appending a single tile to `self`, per domain."""
     other_data_vars = {}
     for hashed_name in var_names:
-        result = other_data_model.data_vars_mapping.get(hashed_name, None)
-        if result is not None:
-            other_data_vars[hashed_name] = other_data_model.variables[hashed_name]
+        exists = other_data_model.data_vars_mapping.get(hashed_name, False)
+        if not exists:
+            other_data_vars[hashed_name] = None
         else:
-#             other_data_vars[hashed_name] = None
-            raise ValueError(f"No data var {hashed_name!r}!")
+            other_data_vars[hashed_name] = other_data_model.variables[hashed_name]
+            # raise ValueError(f"No data var {hashed_name!r}!")
 
     # Raise an error if no match in data vars between existing array and other_data_model.
     if len(list(other_data_vars.keys())) == 0:
