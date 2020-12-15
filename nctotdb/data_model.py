@@ -385,7 +385,8 @@ class NCDataModelGroup(object):
                 if data_model is not None:
                     result = data_model
                     break
-        self.primary_data_model = result
+            self.primary_data_model = result
+        return self._primary_data_model
 
     @primary_data_model.setter
     def primary_data_model(self, value):

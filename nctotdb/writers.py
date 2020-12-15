@@ -593,7 +593,8 @@ class TileDBWriter(_TDBWriter):
 
         """
         self._make_shape_domains()
-        domains_mapping = self.domains_mapping if domains_mapping is None
+        if domains_mapping is None:
+            domains_mapping = self.domains_mapping
 
         for domain_name, domain_var_names in domains_mapping.items():
             domain_coord_names = domain_name.split(self.domain_separator)
@@ -732,7 +733,7 @@ class TileDBWriter(_TDBWriter):
 
         # Set up logging.
         if logfile is not None:
-            logging.basicConfig(filename=job_args.logfile,
+            logging.basicConfig(filename=logfile,
                                 level=logging.ERROR,
                                 format='%(asctime)s %(message)s',
                                 datefmt='%d/%m/%Y %H:%M:%S')
