@@ -30,6 +30,7 @@ class NCDataModel(object):
         self.shape = None
         self.chunks = None
 
+        self._hashed_data_var_names = None
         self._data_vars_mapping = None
         self._nc_loaded = False
         self._classified = False
@@ -39,7 +40,7 @@ class NCDataModel(object):
         if self._data_vars_mapping is None:
             if not self._classified:
                 self.populate()
-            self.data_vars_mapping = self._map_data_vars()
+            self._map_data_vars()
         return self._data_vars_mapping
 
     @data_vars_mapping.setter
@@ -52,7 +53,23 @@ class NCDataModel(object):
         for name in self.data_var_names:
             hashed_name = metadata_hash(self, name)
             dv_mapping[hashed_name] = [self, name]
-        return dv_mapping
+        self.data_vars_mapping = dv_mapping
+
+    @property
+    def hashed_data_var_names(self):
+        if self._hashed_data_var_names is None:
+            if not self._classified:
+                self.populate()
+            hashed_names = []
+            for var_name in self.data_var_names:
+                hashed_name = metadata_hash(self, var_name)
+                hashed_names.append(hashed_name)
+            self.hashed_data_var_names = hashed_names
+        return self._hashed_data_var_names
+
+    @hashed_data_var_names.setter
+    def hashed_data_var_names(self, value):
+        self._hashed_data_var_names = value
 
     def open(self):
         # Open the NC file and retrieve key elements of it.
@@ -83,10 +100,6 @@ class NCDataModel(object):
         if self._ncds is not None:
             result = self._ncds.isopen()
         return result
-
-    @property
-    def data_vars_mapping(self):
-        return None
 
     def populate(self):
         with self.open_netcdf():
@@ -371,6 +384,7 @@ class NCDataModelGroup(object):
 
         self._primary_data_model = None
         self._data_var_names = None
+        self._hashed_data_var_names = None
         self._data_vars_mapping = None
 
         self.netcdf_filename = self.primary_data_model.netcdf_filename
@@ -416,12 +430,26 @@ class NCDataModelGroup(object):
     @property
     def data_var_names(self):
         if self._data_var_names is None:
-            self.data_var_names = list(self.data_vars_mapping.keys())
+            dvn = []
+            for data_model in self.data_models:
+                var_names = data_model.data_var_names
+                dvn.extend(var_names)
+                self.data_var_names = dvn
         return self._data_var_names
 
     @data_var_names.setter
     def data_var_names(self, value):
-        self._data_var_names = value
+        self.data_var_names = value
+
+    @property
+    def hashed_data_var_names(self):
+        if self._hashed_data_var_names is None:
+            self.hashed_data_var_names = list(self.data_vars_mapping.keys())
+        return self._hashed_data_var_names
+
+    @hashed_data_var_names.setter
+    def hashed_data_var_names(self, value):
+        self._hashed_data_var_names = value
 
     @property
     def data_vars_mapping(self):

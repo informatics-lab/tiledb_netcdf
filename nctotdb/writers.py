@@ -954,7 +954,7 @@ def _dim_inds(dim_points, spatial_inds, offset=0):
 def _dim_points(points):
     """Convert a dimension variable (coordinate) points to index space."""
     points_ndim = points.ndim
-    if points_ndim != 0:
+    if points_ndim != 1:
         emsg = f"The append dimension must be 1D, got {points_ndim}D array."
         raise ValueError(emsg)
     start, stop = points[0], points[-1]
@@ -1010,9 +1010,9 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         exists = other_data_model.data_vars_mapping.get(hashed_name, False)
         if not exists:
             other_data_vars[hashed_name] = None
+            # raise ValueError(f"No data var {hashed_name!r}!")
         else:
             other_data_vars[hashed_name] = other_data_model.variables[hashed_name]
-            # raise ValueError(f"No data var {hashed_name!r}!")
 
     # Raise an error if no match in data vars between existing array and other_data_model.
     if len(list(other_data_vars.keys())) == 0:
