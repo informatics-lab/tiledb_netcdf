@@ -618,17 +618,6 @@ class TileDBWriter(_TDBWriter):
                                         domain_name, data_array_name)
             self.populate_multiattr_array(data_array_name, domain_var_names, domain_name)
 
-    def _scalar_step(self, base_point, append_dim, other):
-        """
-        Manually calculate the append dimension point step in the scalar case
-        when it cannot be done by finding the diff between successive points.
-
-        """
-        other_data_model = NCDataModel(other)
-        other_data_model.classify_variables()
-        offset_point = other_data_model.variables[append_dim][:]
-        return offset_point - base_point
-
     def _get_scalar_offset(self, baseline, append_dim, self_dim_stop):
         """
         Use the specified baseline file to calcuate the single offset between every
@@ -640,24 +629,8 @@ class TileDBWriter(_TDBWriter):
             odm.classify_variables()
             odm.get_metadata()
             points = np.atleast_1d(odm.variables[append_dim][:])
-        return points - self_dim_stop
-
-    def _get_scalar_points_and_offsets(self, others, append_dim, self_dim_stop):
-        """
-        Scan all of `others` to find each offset between the existing array and
-        each dataset to be appended.
-
-        """
-        odp = []
-        for other in others:
-            ncdm = NCDataModel(other)
-            with ncdm.open_netcdf():
-                ncdm.classify_variables()
-                ncdm.get_metadata()
-                odp.append(ncdm.variables[append_dim][:])
-        other_dim_points = np.array(odp)
-        offsets = other_dim_points - self_dim_stop
-        return offsets.data  # Only return the non-masked element of the masked array.
+        result = points - self_dim_stop
+        return result[0]
 
     def _run_consolidate(self, domain_names, data_array_name, verbose=False):
         # Consolidate at the end of the append operations to make the resultant
@@ -716,40 +689,26 @@ class TileDBWriter(_TDBWriter):
                 raise ValueError('Cannot determine scalar step without a baseline dataset.')
             self_ind_stop = 0
             self_dim_stop = self_dim_points[0]
-            offsets = self._get_scalar_offset(baseline, append_dim, self_dim_stop)
-            # offsets = self._get_scalar_points_and_offsets(others, append_dim, self_dim_stop)
-            if len(offsets) == 1:
-                self_step = offsets[0]
-            else:
-                # Smooth out any noise in slightly different offsets.
-                self_step = np.median(np.diff(offsets))
+            offset = self_step = self._get_scalar_offset(baseline, append_dim, self_dim_stop)
             scalar = True
         else:
             self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
-            self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
-                                                      [self_dim_start, self_dim_stop])
-            offsets = None
+            _, self_ind_stop = _dim_inds(self_dim_points, [self_dim_start, self_dim_stop])
+            offset = None
             scalar = False
 
         # Set up logging.
         if logfile is not None:
-            logging.basicConfig(filename=job_args.logfile,
+            logging.basicConfig(filename=logfile,
                                 level=logging.ERROR,
                                 format='%(asctime)s %(message)s',
                                 datefmt='%d/%m/%Y %H:%M:%S')
 
-        # For multidim / multi-attr appends this may be more complex.
         n_jobs = len(others)
         # Prepare for serialization.
         tdb_config = self.ctx.config().dict() if self.ctx is not None else None
         all_job_args = []
         for ct, other in enumerate(others):
-            if offsets is None:
-                offset = None
-            elif len(offsets) == 1:
-                offset, = offsets
-            else:
-                offset = offsets[ct]
             this_job_args = AppendArgs(other=other, domain=domain_paths, name=data_array_name,
                                        dim=append_dim, axis=append_axes, scalar=scalar, group=group,
                                        offset=offset, mapping=self.domains_mapping, logfile=logfile,
@@ -977,8 +936,7 @@ def _dim_offsets(dim_points, self_stop_ind, self_stop, self_step,
         assert self_step == other_step, "Step between coordinate points is not equal."
         spatial_inds = [other_start, other_stop]
 
-    if points_offset is None:
-        points_offset = other_start - self_stop
+    points_offset = other_start - self_stop
     inds_offset = int(points_offset / self_step) + self_stop_ind
 
     i_start, _ = _dim_inds(dim_points, spatial_inds, inds_offset)
@@ -1028,10 +986,7 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     if not scalar_coord and len(other_dim_points) == 1:
         scalar_coord = True
 
-    if scalar_coord:
-        shape = [1] + list(data_var_shape)
-    else:
-        shape = data_var_shape
+    shape = [1] + list(data_var_shape) if scalar_coord else data_var_shape
 
     offsets = []
     offset = _dim_offsets(
