@@ -30,6 +30,7 @@ class NCDataModel(object):
         self.shape = None
         self.chunks = None
 
+        self._data_vars_mapping = None
         self._nc_loaded = False
         self._classified = False
 
@@ -65,7 +66,13 @@ class NCDataModel(object):
 
     @property
     def data_vars_mapping(self):
-        return None
+        if self._data_vars_mapping is None:
+            self.data_vars_mapping = {metadata_hash(self, n): [self, n] for n in self.data_var_names}
+        return self._data_vars_mapping
+
+    @data_vars_mapping.setter
+    def data_vars_mapping(self, value):
+        self._data_vars_mapping = value
 
     def populate(self):
         with self.open_netcdf():
@@ -411,6 +418,13 @@ class NCDataModelGroup(object):
     @data_vars_mapping.setter
     def data_vars_mapping(self, value):
         self._data_vars_mapping = value
+
+    @property
+    def scalar_coord_names(self):
+        dm_scalar_coords = []
+        for dm in self.data_models:
+            dm_scalar_coords += dm.scalar_coord_names
+        return list(set(dm_scalar_coords))
 
     def _map_data_vars(self):
         """Create a mapping of data variable names to the data model supplying that data variable."""

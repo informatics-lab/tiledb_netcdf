@@ -80,3 +80,6 @@ venv.bak/
 /shelf/
 /workspace.xml
 .idea
+
+# VSCode
+.vscode/

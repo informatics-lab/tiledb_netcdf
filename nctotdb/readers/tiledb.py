@@ -481,7 +481,7 @@ class TileDBReader(Reader):
             iter_groups = self.groups
 
         cubes = []
-        for group_path, group_array_paths in iter_groups.items():
+        for _, group_array_paths in iter_groups.items():
             dim_paths, data_paths = self._get_arrays_and_dims(group_array_paths)
             grid_mapping = self._get_grid_mapping(data_paths[0])
             group_coords = self._load_group_dims(dim_paths, grid_mapping)
