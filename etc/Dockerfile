@@ -44,9 +44,12 @@ RUN wget https://sourceforge.net/projects/pyke/files/pyke/1.1.1/pyke3-1.1.1.zip/
 # Must have an available numpy installation (1.10+) prior to installing cartopy during setup.py
 RUN pip install numpy==1.18.5
 
-COPY . /tiledb_netcdf
 WORKDIR /tiledb_netcdf
 
+# Copy only files needed to install requirements to speed up subsequent builds
+COPY setup.py README.md .
 RUN pip install .
+
+COPY . /tiledb_netcdf
 
 ENTRYPOINT ["python"]

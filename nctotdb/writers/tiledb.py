@@ -6,145 +6,18 @@ import os
 
 import numpy as np
 import tiledb
-import zarr
 
-from .data_model import NCDataModel, NCDataModelGroup
-from .grid_mappings import store_grid_mapping
-from .paths import PosixArrayPath, AzureArrayPath
-from . import utils
+from .core import Writer
+from ..data_model import NCDataModel
+from ..grid_mappings import store_grid_mapping
 
 
 append_arg_list = ['other', 'domain', 'name', 'axis', 'dim',
-                   'ind_stop', 'dim_stop', 'step', 'scalar',
+                   'ind_stop', 'dim_stop', 'step', 'scalar', 'group',
                    'mapping', 'verbose', 'job_number', 'n_jobs',
-                   'make_data_model', 'group', 'offset', 'ctx', 'logfile']
+                   'make_data_model', 'offset', 'ctx', 'logfile']
 defaults = [None] * len(append_arg_list)
 AppendArgs = namedtuple('AppendArgs', append_arg_list, defaults=defaults)
-
-
-class Writer(object):
-    """
-    An abstract base for specific writers to write the contents
-    of a NetCDF file to a different format.
-
-    """
-    def __init__(self, data_model,
-                 array_filepath=None, container=None, array_name=None,
-                 unlimited_dims=None, ctx=None):
-        self._data_model = data_model
-        self.array_filepath = array_filepath
-        self.container = container  # Azure container name.
-        self.unlimited_dims = unlimited_dims
-        self.ctx = ctx  # TileDB Context object.
-
-        self._scalar_unlimited = None
-
-        # Need either a local filepath or a remote container.
-        utils.ensure_filepath_or_container(self.array_filepath, self.container)
-
-        self._array_name = array_name
-        if self._array_name is None:
-            self.array_name = os.path.basename(os.path.splitext(self.data_model.netcdf_filename)[0])
-        else:
-            self.array_name = self._array_name
-        self.array_path = utils.filepath_generator(self.array_filepath,
-                                                   self.container,
-                                                   self.array_name,
-                                                   ctx=self.ctx)
-
-    @property
-    def data_model(self):
-        if not self._data_model.dataset_open():
-            self._data_model.open()
-        return self._data_model
-
-    def _all_coords(self, variable):
-        dim_coords = list(variable.dimensions)
-        other_coords = variable.coordinates.split(' ')
-        return dim_coords + other_coords
-
-    def _get_dim_coord_names(self, var_name):
-        """
-        Figure out names of the dimension-describing coordinates for this array,
-        including the promoted append-dimension scalar coordinate if necessary.
-
-        """
-        dim_coord_names = self.data_model.variables[var_name].dimensions
-        if self._scalar_unlimited is not None:
-            # `dim_coord_names` is a tuple...
-            dim_coord_names = (self._scalar_unlimited,) + dim_coord_names
-        return dim_coord_names
-
-    def _append_checker(self, other_data_model, var_name, append_dim):
-        """Checks to see if an append operation can go ahead."""
-        # Sanity checks: is the var name in both self, other, and the tiledb?
-        assert var_name in self.data_model.data_var_names, \
-            f'Variable name {var_name!r} not found in this data model.'
-        assert var_name in other_data_model.data_var_names, \
-            f'Variable name {var_name!r} not found in other data model.'
-
-        self_var = self.data_model.variables[var_name]
-        self_var_coords = self._all_coords(self_var)
-        # Is the append dimension valid?
-        assert append_dim in self_var_coords, \
-            f'Dimension {append_dim!r} not found in this data model.'
-
-        with other_data_model.open_netcdf():
-            other_var = other_data_model.variables[var_name]
-            other_var_coords = self._all_coords(other_var)
-            # Is the append dimension valid?
-            assert append_dim in other_var_coords, \
-                f'Dimension {append_dim!r} not found in other data model.'
-
-    def _append_dimension(self, var_name, append_desc):
-        """Determine the name and index of the dimension for the append operation."""
-        if not isinstance(append_desc, int):
-            # Find the append axis from the dimension name.
-            append_axis = self.data_model.variables[var_name].dimensions.index(append_desc)
-            append_dim = append_desc
-        else:
-            # Find the append dimension name from the axis.
-            append_axis = append_desc
-            append_dim = self.data_model.dimensions[append_axis]
-        return append_axis, append_dim
-
-    def _fill_missing_points(self, coord_array_path, coord_array_name, verbose=False):
-        """
-        If one or more indices along the append axis are missing spatial points, we
-        end up with `NaN`s in the resultant coordinate array. This prevents loading
-        into Iris (as we cannot make a monotonic coordinate array).
-
-        Fill such missing points with interpolated point values so that Iris can load
-        the dataset, if with missing data points still. Use a simple custom 1D
-        interpolator as the SciPy and NumPy offerings cannot handle NaN values.
-
-        """
-        with tiledb.open(coord_array_path, 'r', ctx=self.ctx) as D:
-            ned = D.nonempty_domain()[0]
-            coord_points = D[ned[0]:ned[1]][coord_array_name]
-
-        missing_points, = np.nonzero(np.isnan(coord_points))
-        if len(missing_points):
-            if verbose:
-                print(f'{len(missing_points)} points to fill in {coord_array_name!r}.')
-
-            ind_points = np.arange(len(coord_points))
-            coord_steps = np.unique(np.diff(coord_points))
-            # Expects only a single non-NaN step (i.e. monotonicity).
-            numeric_step, = coord_steps[np.nonzero(~np.isnan(coord_steps))]
-
-            # Interpolate to fill the missing points.
-            vec_interp = np.vectorize(fillnan)
-            coord_points[missing_points] = vec_interp(ind_points[missing_points],
-                                                      coord_points[0],
-                                                      numeric_step)
-
-            # Write the whole filled array back to the TileDB coord array.
-            with tiledb.open(coord_array_path, 'w', ctx=self.ctx) as D:
-                D[ned[0]:ned[1]] = coord_points
-        else:
-            if verbose:
-                print(f'No missing points in {coord_array_name!r}, nothing to do.')
 
 
 class _TDBWriter(Writer):
@@ -344,7 +217,7 @@ class _TDBWriter(Writer):
             self.populate_domain_arrays(domain_vars, group_dirname)
 
     def append(self, others, var_name, append_dim,
-              logfile=None, parallel=False, verbose=False):
+               logfile=None, parallel=False, verbose=False):
         """
         Append extra data as described by the contents of `others` onto
         an existing TileDB array along the axis defined by `append_dim`.
@@ -412,7 +285,7 @@ class _TDBWriter(Writer):
 
     def fill_missing_points(self, append_dim_name, verbose=False):
         # XXX duplicated from `append` method.
-        domain = self.data_model.varname_domain_mapping[var_name]
+        domain = self.data_model.varname_domain_mapping[append_dim_name]
         domain_name = f'domain_{self.data_model.domains.index(domain)}'
         domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
         coord_array_path = os.path.join(domain_path, append_dim_name)
@@ -629,20 +502,6 @@ class TileDBWriter(_TDBWriter):
             odm.classify_variables()
             odm.get_metadata()
             points = np.atleast_1d(odm.variables[append_dim][:])
-        result = points - self_dim_stop
-        return result[0]
-
-    def _get_scalar_offset(self, baseline, append_dim, self_dim_stop):
-        """
-        Use the specified baseline file to calcuate the single offset between every
-        successive step along the scalar append dimension.
-
-        """
-        odm = NCDataModel(baseline)
-        with odm.open_netcdf():
-            odm.classify_variables()
-            odm.get_metadata()
-            points = np.atleast_1d(odm.variables[append_dim][:])
         return points - self_dim_stop
 
     def _get_scalar_points_and_offsets(self, others, append_dim, self_dim_stop):
@@ -739,7 +598,6 @@ class TileDBWriter(_TDBWriter):
         tdb_config = self.ctx.config().dict() if self.ctx is not None else None
         all_job_args = []
         for ct, other in enumerate(others):
-            offset = offsets[ct] if offsets is not None else None
             this_job_args = AppendArgs(other=other, domain=domain_paths, name=data_array_name,
                                        dim=append_dim, axis=append_axes, scalar=scalar, group=group,
                                        offset=offset, mapping=self.domains_mapping, logfile=logfile,
@@ -771,111 +629,9 @@ class TileDBWriter(_TDBWriter):
                                           append_dim_name,
                                           verbose=verbose)
 
-
-class ZarrWriter(Writer):
-    """Provides a class to write Python objects loaded from NetCDF to zarr."""
-    def __init__(self, data_model, array_filepath, array_name=None):
-        super().__init__(data_model, array_filepath, array_name, unlimited_dims=None)
-
-        filename = os.path.join(os.path.abspath("."), self.array_filepath, self.array_name)
-        self.array_filename = f'{filename}.zarr'
-        print(self.array_filename)
-
-        self.group = None
-        self.zarray = None
-
-    def create_variable_datasets(self, var_names):
-        """
-        Create a zarr group - containing data variables and dimensions - for
-        a given domain.
-
-        A domain is described by the tuple of dimensions that describe it.
-
-        """
-        # Write domain variables and dimensions into group.
-        for var_name in var_names:
-            data_var = self.data_model.variables[var_name]
-            chunks = self.data_model.get_chunks(var_name)
-            data_array = self.group.create_dataset(var_name,
-                                                shape=data_var.shape,
-                                                chunks=chunks,
-                                                dtype=data_var.dtype)
-            data_array[:] = data_var[...]
-
-            # Set array attributes from ncattrs.
-            for ncattr in data_var.ncattrs():
-                data_array.attrs[ncattr] = data_var.getncattr(ncattr)
-
-            # Set attribute to specify var's dimensions.
-            data_array.attrs['_ARRAY_DIMENSIONS'] = data_var.dimensions
-
-    def create_zarr(self):
-        """
-        Create a zarr for the contents of `self.data_model`. The grouped
-        structure of this zarr is:
-
-            root (filename)
-             | - phenom_0
-             | - phenom_1
-             | - ...
-             | - dimension_0
-             | - dimension_1
-             | - ...
-             | - phenom_n
-             | - ...
-
-        TODO: add global NetCDF attributes to outermost zarr structure?
-
-        """
-        store = zarr.DirectoryStore(self.array_filename)
-        self.group = zarr.group(store=store)
-
-        # Write zarr datasets for data variables.
-        for domain in self.data_model.domains:
-            domain_vars = self.data_model.domain_varname_mapping[domain]
-            self.create_variable_datasets(domain_vars)
-
-        # Write zarr datasets for dimension variables.
-        keys = list(self.data_model.domain_varname_mapping.keys())
-        unique_flat_keys = set([k for domain in keys for k in domain])
-        self.create_variable_datasets(unique_flat_keys)
-
-    def append(self, other_data_model, var_name, append_dim):
-        """
-        Append the contents of other onto self.group, optionally specifying
-        a single zarr array to append to with `group_name`.
-
-        If this is not specified, extend all of the arrays in self.group_name
-        with all of the arrays found in other. This assumes that the data
-        variables in self and other:
-          a) are identical
-          b) all append along the same dimension.
-
-        Note: append axis is limited to a single axis.
-
-        """
-        # Check if the append can go ahead.
-        self._append_checker(other_data_model, var_name, append_dim)
-
-        # Work out the index of the append dimension.
-        append_axis, append_dim = self._append_dimension(var_name, append_dim)
-
-        with other_data_model.open_netcdf():
-            # Append data to the phenomenon.
-            other_data_var = other_data_model.variables[var_name]
-            getattr(self.group, var_name).append(other_data_var[...], axis=append_axis)
-
-            # Append coordinate values to the append dimension.
-            other_dim = other_data_model.variables[append_dim]
-            getattr(self.group, append_dim).append(other_dim[...], axis=0)
-
-
-###################################################################################
-#                                                                                 #
-# Remove these functions from `TDBWriter` because most of them are static and it  #
-# might make tiling in parallel possible!                                         #
-#                                                                                 #
-###################################################################################
+# #####
+# Static helper functions.
+# #####
 
 
 def _array_indices(shape, start_index):
@@ -910,30 +666,18 @@ def write_array(array_filename, data_var,
 def write_multiattr_array(array_filename, data_vars,
                           start_index=None, scalar=False, ctx=None):
     """Write to each attr in the array."""
-    # Determine shape of items to be written.
-    zeroth_key = list(data_vars.keys())[0]
-    shape = data_vars[zeroth_key].shape  # All data vars *must* have the same shape for writing...
-    if scalar:
-        shape = (1,) + shape
-
-    # Get write indices.
     if start_index is None:
         start_index = 0
+        shape = data_vars[0].shape  # All data vars *must* have the same shape for writing...
+        if scalar:
+            shape = (1,) + shape
         write_indices = _array_indices(shape, start_index)
     else:
         write_indices = start_index
 
-    # Check for attrs with no data.
-    for name, data_var in data_vars.items():
-        if data_var is None:
-            # Handle missing data for this attr.
-            missing_data = np.empty(shape)
-            missing_data.fill(np.nan)
-            data_vars[name] = missing_data
-
     # Write netcdf data var contents into array.
     with tiledb.open(array_filename, 'w', ctx=ctx) as A:
-        A[write_indices] = {name: data_var[...] for name, data_var in data_vars.items()}
+        A[write_indices] = {data_var.name: data_var[...] for data_var in data_vars}
 
 
 def _dim_inds(dim_points, spatial_inds, offset=0):
@@ -943,10 +687,6 @@ def _dim_inds(dim_points, spatial_inds, offset=0):
 
 def _dim_points(points):
     """Convert a dimension variable (coordinate) points to index space."""
-    points_ndim = points.ndim
-    if points_ndim != 0:
-        emsg = f"The append dimension must be 1D, got {points_ndim}D array."
-        raise ValueError(emsg)
     start, stop = points[0], points[-1]
     step, = np.unique(np.diff(points))
     return start, stop, step
@@ -967,16 +707,12 @@ def _dim_offsets(dim_points, self_stop_ind, self_stop, self_step,
         assert self_step == other_step, "Step between coordinate points is not equal."
         spatial_inds = [other_start, other_stop]
 
-    points_offset = other_start - self_stop
+    if points_offset is None:
+        points_offset = other_start - self_stop
     inds_offset = int(points_offset / self_step) + self_stop_ind
 
     i_start, _ = _dim_inds(dim_points, spatial_inds, inds_offset)
     return i_start
-
-
-def fillnan(xi, y0, diff):
-    """A simple linear 1D interpolator."""
-    return y0 + (xi * diff)
 
 
 def _progress_report(other_data_model, verbose, i, total):
@@ -994,22 +730,8 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
                          self_ind_stop, self_dim_stop, self_step,
                          scalar_offset=None, do_logging=False, ctx=None):
     """Process appending a single tile to `self`, per domain."""
-    other_data_vars = {}
-    for hashed_name in var_names:
-        result = other_data_model.data_vars_mapping.get(hashed_name, None)
-        if result is not None:
-            other_data_vars[hashed_name] = other_data_model.variables[hashed_name]
-        else:
-#             other_data_vars[hashed_name] = None
-            raise ValueError(f"No data var {hashed_name!r}!")
-
-    # Raise an error if no match in data vars between existing array and other_data_model.
-    if len(list(other_data_vars.keys())) == 0:
-        emsg = "Variable names in data model [{}] not present in existing array."
-        raise KeyError(emsg.format(', '.join(other_data_model.data_var_names)))
-
-    zeroth_data_var = list(other_data_vars.keys())[0]
-    data_var_shape  = other_data_vars[zeroth_data_var].shape
+    other_data_vars = [other_data_model.variables[var_name] for var_name in var_names]
+    data_var_shape = other_data_vars[0].shape
     other_dim_var = other_data_model.variables[append_dim]
     other_dim_points = np.atleast_1d(other_dim_var[:])
 
@@ -1017,7 +739,10 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     if not scalar_coord and len(other_dim_points) == 1:
         scalar_coord = True
 
-    shape = [1] + list(data_var_shape) if scalar_coord else data_var_shape
+    if scalar_coord:
+        shape = [1] + list(data_var_shape)
+    else:
+        shape = data_var_shape
 
     offsets = []
     offset = _dim_offsets(
@@ -1039,6 +764,10 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     write_array(dim_array_path, other_dim_var,
                 start_index=offset_inds[append_axis], ctx=ctx)
 
+    dim_array_path = f"{domain_path}{append_dim}"
+    write_array(dim_array_path, other_dim_var,
+                start_index=offset_inds[append_axis], ctx=ctx)
+
 
 def _make_multiattr_tile_helper(serialized_job):
     """
@@ -1052,13 +781,18 @@ def _make_multiattr_tile_helper(serialized_job):
     else:
         ctx = None
 
-    do_logging = job_args.logfile is not None
+    do_logging = False
+    if job_args.logfile is not None:
+        do_logging = True
+        logging.basicConfig(filename=job_args.logfile,
+                            level=logging.ERROR,
+                            format='%(asctime)s %(message)s',
+                            datefmt='%d/%m/%Y %H:%M:%S')
 
     domains_mapping = job_args.mapping
     domain_paths = job_args.domain
     append_dim = job_args.dim
     append_axes = job_args.axis
-    group = job_args.group
 
     # Record what we've processed...
     if do_logging:
@@ -1066,19 +800,10 @@ def _make_multiattr_tile_helper(serialized_job):
 
     # To improve fault tolerance all the append processing happens in a try/except...
     try:
-        if group:
-            # Make an NCDataModelGroup from the list of paths in `other`.
-            odms = []
-            for fn in job_args.other:
-                odm = NCDataModel(fn)
-                odm.populate()
-                odms.append(odm)
-            other_data_model = NCDataModelGroup(odms)
-        elif isinstance(job_args.other, NCDataModel):
+        if isinstance(job_args.other, NCDataModel):
             other_data_model = job_args.other
         else:
             other_data_model = NCDataModel(job_args.other)
-            other_data_model.populate()
 
         with other_data_model.open_netcdf():
             for n, domain_path in enumerate(domain_paths):
@@ -1104,6 +829,7 @@ def _make_multiattr_tile_helper(serialized_job):
         logging.error(emsg, exc_info=True)
         if job_args.logfile is None and job_args.verbose:
             raise
+
 
 def _make_tile(other, domain_path, var_name, append_axis, append_dim,
                self_ind_stop, self_dim_stop, self_step,

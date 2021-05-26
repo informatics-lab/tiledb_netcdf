@@ -9,12 +9,11 @@ from iris.cube import Cube, CubeList
 from iris.fileformats.netcdf import parse_cell_methods
 import numpy as np
 import tiledb
-import xarray as xr
-import zarr
 
-from .grid_mappings import GridMapping
-from .proxy import TileDBDataProxy
-from . import utils
+from .core import Reader
+from ..grid_mappings import GridMapping
+from ..proxy import TileDBDataProxy
+from .. import utils
 
 
 # Ref Iris: https://github.com/SciTools/iris/blob/master/lib/iris/_cube_coord_common.py#L75
@@ -38,41 +37,6 @@ IRIS_FORBIDDEN_KEYS = set([
         "scale_factor",
         "_FillValue",
     ])
-
-
-class Reader(object):
-    """
-    Abstract reader class that defines the API.
-
-    TODO replace all os usages with tiledb ls'.
-
-    """
-    horizontal_coord_names = ['latitude',
-                              'longitude',
-                              'grid_latitude',
-                              'grid_longitude',
-                              'projection_x_coordinate',
-                              'projection_y_coordinate']
-    def __init__(self, array_filepath):
-        self.array_filepath = array_filepath
-
-        self._artifact = None
-
-    @property
-    def artifact(self):
-        return self._artifact
-
-    @artifact.setter
-    def artifact(self, value):
-        self._artifact = value
-
-    def to_iris(self):
-        """Convert the input to an Iris cube or cubelist, depending on input."""
-        raise NotImplementedError
-
-    def to_xarray(self):
-        """Convert the input to an Xarray dataset."""
-        raise NotImplementedError
 
 
 class TileDBReader(Reader):
@@ -538,18 +502,4 @@ class TileDBReader(Reader):
     def to_xarray(self, names=None):
         intermediate = self.to_iris(names=names)
         self.artifact = xr.from_iris(intermediate)
-        return self.artifact
-
-
-class ZarrReader(Reader):
-    def __init__(self, array_filepath):
-        super().__init__(array_filepath)
-
-    def to_iris(self):
-        intermediate = self.to_xarray()
-        self.artifact = intermediate.to_iris()
-        return self.artifact
-
-    def to_xarray(self):
-        self.artifact = xr.open_zarr(self.array_filepath)
         return self.artifact
