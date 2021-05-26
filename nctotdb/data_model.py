@@ -30,6 +30,7 @@ class NCDataModel(object):
         self.shape = None
         self.chunks = None
 
+        self._data_vars_mapping = None
         self._nc_loaded = False
         self._classified = False
 
@@ -65,7 +66,13 @@ class NCDataModel(object):
 
     @property
     def data_vars_mapping(self):
-        return None
+        if self._data_vars_mapping is None:
+            self.data_vars_mapping = {metadata_hash(self, n): [self, n] for n in self.data_var_names}
+        return self._data_vars_mapping
+
+    @data_vars_mapping.setter
+    def data_vars_mapping(self, value):
+        self._data_vars_mapping = value
 
     def populate(self):
         with self.open_netcdf():
@@ -346,7 +353,6 @@ class NCDataModelGroup(object):
         self._data_models = data_models
 
         self._load()
-        self.verify()
 
         self._primary_data_model = None
         self._data_var_names = None
@@ -412,14 +418,19 @@ class NCDataModelGroup(object):
     def data_vars_mapping(self, value):
         self._data_vars_mapping = value
 
+    @property
+    def scalar_coord_names(self):
+        dm_scalar_coords = []
+        for dm in self.data_models:
+            dm_scalar_coords += dm.scalar_coord_names
+        return list(set(dm_scalar_coords))
+
     def _map_data_vars(self):
         """Create a mapping of data variable names to the data model supplying that data variable."""
         dv_mapping = {}
         for dm in self.data_models:
             if dm is not None:
-                for name in dm.data_var_names:
-                    hashed_name = metadata_hash(dm, name)
-                    dv_mapping[hashed_name] = [dm, name]
+                dv_mapping.update(dm.data_vars_mapping)
         return dv_mapping
 
     @contextmanager
@@ -462,7 +473,3 @@ class NCDataModelGroup(object):
 
         """
         return all([dm.dataset_open() for dm in self.data_models if dm is not None])
-
-    def verify(self):
-        """Not implemented!"""
-        pass
