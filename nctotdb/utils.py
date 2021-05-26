@@ -20,3 +20,8 @@ def filepath_generator(array_filepath, container, array_name, ctx=None):
     elif container is not None:
         result = AzureArrayPath(container, array_name, ctx=ctx)
     return result
+
+
+def fillnan(xi, y0, diff):
+    """A simple linear 1D interpolator."""
+    return y0 + (xi * diff)
