@@ -161,14 +161,14 @@ append_files = ['file1.nc', 'file2.nc', 'file3.nc', 'file4.nc', 'file5.nc']
 data_array_name = 'data'
 
 writer.append(append_files, unlimited_dims, data_array_name,
-              baseline=append_files[0])
+              baselines={unlimited_dims: append_files[0]})
 ```
 
 **Note:** The file used to calculate the offsets is not appended as well as being used to calculate
 the offset. You will need to include the offset file in the append files as well!
 
-**Note:** All such appends with a scalar append dimension must be supplied with a `baseline`
-file to calculate the offset, even if an append has already successfully been carried out.
+**Note:** All appends with a scalar append dimension must be supplied with a `baseline`
+file to calculate the offset, even if an append has already successfully been carried out. You must also specify one baseline file per scalar append dimension, in a dictionary of `{"append_dim": baseline_file}`.
 
 If you try and perform an append along a scalar dimension without providing a `baseline`
 file to calculate the offset, you will encounter an error message:
@@ -176,6 +176,28 @@ file to calculate the offset, you will encounter an error message:
 ```python-traceback
 ValueError: Cannot determine scalar step without a baseline dataset.
 ```
+
+##### 3b. Custom offsets between files being appended
+
+You may occasionally need to override the offset between successive files being appended, for example to introduce some padding between files, or to handle unexpected short files. This can be done using
+the `override_offsets` kwarg to `append`. As with specifying `baselines`, you need to pass a dictionary linking the named append dimension to the offset override you wish to apply to that dimension. For example:
+
+```python
+append_files = ['file1.nc', 'file2.nc', 'file3_short.nc', 'file4.nc', 'file5.nc']
+expected_dim_len = 10
+data_array_name = 'data'
+
+writer.append(append_files, unlimited_dims, data_array_name,
+              override_offsets={unlimited_dims: expected_dim_len})
+```
+
+In this case, the third file is shorter than expected (as helpfully indicated in its filename), and the override offset allows us to pad the append dimension with missing data where the file runs short. We can use the `fill_missing_points` method to fill in the gap in the associated dimension coordinate after the append has completed:
+
+```python
+writer.fill_missing_points(unlimited_dims)
+```
+
+**Note:** you do not have to provide an override offset for every append dimension.
 
 #### 4. Read Converted Arrays
 

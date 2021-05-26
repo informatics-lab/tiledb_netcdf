@@ -558,6 +558,8 @@ class TileDBWriter(_TDBWriter):
             base_dim_start, base_dim_stop, dim_step = _dim_points(base_dim_points)
             _, base_ind_stop = _dim_inds(base_dim_points, [base_dim_start, base_dim_stop])
             scalar = False
+        if override_offset is not None:
+            dim_step = override_offset
         return (int(base_ind_stop), int(base_dim_stop), int(dim_step), scalar)
 
     def append(self, others, append_dims, data_array_name,
