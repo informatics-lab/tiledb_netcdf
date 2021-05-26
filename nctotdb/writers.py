@@ -632,6 +632,36 @@ class TileDBWriter(_TDBWriter):
         result = points - self_dim_stop
         return result[0]
 
+    def _get_scalar_offset(self, baseline, append_dim, self_dim_stop):
+        """
+        Use the specified baseline file to calcuate the single offset between every
+        successive step along the scalar append dimension.
+
+        """
+        odm = NCDataModel(baseline)
+        with odm.open_netcdf():
+            odm.classify_variables()
+            odm.get_metadata()
+            points = np.atleast_1d(odm.variables[append_dim][:])
+        return points - self_dim_stop
+
+    def _get_scalar_points_and_offsets(self, others, append_dim, self_dim_stop):
+        """
+        Scan all of `others` to find each offset between the existing array and
+        each dataset to be appended.
+
+        """
+        odp = []
+        for other in others:
+            ncdm = NCDataModel(other)
+            with ncdm.open_netcdf():
+                ncdm.classify_variables()
+                ncdm.get_metadata()
+                odp.append(ncdm.variables[append_dim][:])
+        other_dim_points = np.array(odp)
+        offsets = other_dim_points - self_dim_stop
+        return offsets.data  # Only return the non-masked element of the masked array.
+
     def _run_consolidate(self, domain_names, data_array_name, verbose=False):
         # Consolidate at the end of the append operations to make the resultant
         # array more performant.
@@ -709,6 +739,7 @@ class TileDBWriter(_TDBWriter):
         tdb_config = self.ctx.config().dict() if self.ctx is not None else None
         all_job_args = []
         for ct, other in enumerate(others):
+            offset = offsets[ct] if offsets is not None else None
             this_job_args = AppendArgs(other=other, domain=domain_paths, name=data_array_name,
                                        dim=append_dim, axis=append_axes, scalar=scalar, group=group,
                                        offset=offset, mapping=self.domains_mapping, logfile=logfile,
