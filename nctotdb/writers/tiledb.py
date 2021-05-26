@@ -8,7 +8,7 @@ import numpy as np
 import tiledb
 
 from .core import Writer
-from ..data_model import NCDataModel
+from ..data_model import NCDataModel, NCDataModelGroup
 from ..grid_mappings import store_grid_mapping
 
 
@@ -560,7 +560,7 @@ class TileDBWriter(_TDBWriter):
             scalar = False
         if override_offset is not None:
             dim_step = override_offset
-        return (int(base_ind_stop), int(base_dim_stop), int(dim_step), scalar)
+        return int(base_ind_stop), int(base_dim_stop), int(dim_step), scalar
 
     def append(self, others, append_dims, data_array_name,
                baselines=None, override_offsets=None, group=False,
