@@ -353,7 +353,6 @@ class NCDataModelGroup(object):
         self._data_models = data_models
 
         self._load()
-        self.verify()
 
         self._primary_data_model = None
         self._data_var_names = None
@@ -431,9 +430,7 @@ class NCDataModelGroup(object):
         dv_mapping = {}
         for dm in self.data_models:
             if dm is not None:
-                for name in dm.data_var_names:
-                    hashed_name = metadata_hash(dm, name)
-                    dv_mapping[hashed_name] = [dm, name]
+                dv_mapping.update(dm.data_vars_mapping)
         return dv_mapping
 
     @contextmanager
@@ -476,7 +473,3 @@ class NCDataModelGroup(object):
 
         """
         return all([dm.dataset_open() for dm in self.data_models if dm is not None])
-
-    def verify(self):
-        """Not implemented!"""
-        pass
