@@ -17,6 +17,7 @@ class NCDataModel(object):
         self.data_var_names = []
         self.dim_coord_names = []
         self.scalar_coord_names = []
+        self.length_1_dims = []
         self.aux_coord_names = []
         self.bounds = []
         self.grid_mapping = []
@@ -127,6 +128,8 @@ class NCDataModel(object):
                 else:
                     # This is an auxiliary coordinate.
                     self.aux_coord_names.append(variable_name)
+                if variable.shape == (1,):
+                    self.length_1_dims.append(variable_name)
                 classified_vars.append(variable_name)
 
             # Check if it's a cell measure variable.
@@ -424,6 +427,13 @@ class NCDataModelGroup(object):
         for dm in self.data_models:
             dm_scalar_coords += dm.scalar_coord_names
         return list(set(dm_scalar_coords))
+
+    @property
+    def length_1_dims(self):
+        dm_l1dims = []
+        for dm in self.data_models:
+            dm_l1dims += dm.length_1_dims
+        return list(set(dm_l1dims))
 
     def _map_data_vars(self):
         """Create a mapping of data variable names to the data model supplying that data variable."""
