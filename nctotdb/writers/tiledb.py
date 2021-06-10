@@ -19,284 +19,7 @@ defaults = [None] * len(append_arg_list)
 AppendArgs = namedtuple('AppendArgs', append_arg_list, defaults=defaults)
 
 
-class _TDBWriter(Writer):
-    """
-    .. deprecated::
-        This class is deprecated in favour of the former `MultiAttrTDBWriter`,
-        now renamed to just `TDBWriter`. This preferred class provides all the
-        functionality of this class but with extra functionality for writing
-        multi-attr arrays as well.
-
-        This class is being maintained for now as it provides some of the
-        functionality the preferred class relies upon.
-
-    Write Python objects loaded from NetCDF to TileDB.
-
-    Data Model: an instance of `NCDataModel` supplying data from a NetCDF file.
-    Filepath: the filepath to save the tiledb array at.
-
-    """
-    def __init__(self, data_model,
-                 array_filepath=None, container=None, array_name=None,
-                 unlimited_dims=None, ctx=None):
-        super().__init__(data_model, array_filepath, container, array_name,
-                         unlimited_dims, ctx)
-
-        if self.unlimited_dims is None:
-            self.unlimited_dims = []
-
-    def _public_domain_name(self, domain):
-        domain_index = self.data_model.domains.index(domain)
-        return f'domain_{domain_index}'
-
-    def _create_tdb_directory(self, group_dirname):
-        """
-        Create an on-filesystem directory for a tiledb group if it does
-        not exist, and ignore the error if it does.
-
-        """
-        try:
-            os.makedirs(group_dirname)
-        except FileExistsError:
-            pass
-
-    def _create_tdb_dim(self, dim_name, coords):
-        dim_coord = self.data_model.variables[dim_name]
-        chunks = self.data_model.get_chunks(dim_name)
-
-        # Handle scalar dimensions.
-        if dim_name == self._scalar_unlimited:
-            dim_coord_len = 1
-            chunks = (1,)
-        else:
-            # TODO: work out nD coords (although a DimCoord will never be nD).
-            dim_coord_len, = dim_coord.shape
-
-        # Set the tdb dimension dtype to `int64` regardless of input.
-        # Dimensions must have int indices for dense array schemas.
-        # All tdb dims in a domain must have exactly the same dtype.
-        dim_dtype = np.int64
-
-        # Sort out the domain, based on whether the dim is unlimited,
-        # or whether it was specified that it should be by `self.unlimited_dims`.
-        if dim_name in self.unlimited_dims:
-            domain_max = np.iinfo(dim_dtype).max - dim_coord_len
-        elif dim_name in self.data_model.unlimited_dim_coords:
-            domain_max = np.iinfo(dim_dtype).max - dim_coord_len
-        else:
-            domain_max = dim_coord_len
-
-        # Modify the name of the dimension if this dimension describes the domain
-        # for a dim coord array.
-        # Array attrs and dimensions must have different names.
-        if coords:
-            dim_name = f'{dim_name}_coord'
-
-        return tiledb.Dim(name=dim_name,
-                          domain=(0, domain_max),
-                          tile=chunks,
-                          dtype=dim_dtype)
-
-    def create_domain_arrays(self, domain_vars, domain_name, coords=False):
-        """Create one single-attribute array per data var in this NC domain."""
-        for var_name in domain_vars:
-            # Set dims for the enclosing domain.
-
-            data_var = self.data_model.variables[var_name]
-            data_var_dims = data_var.dimensions
-            # Handle scalar append dimension coordinates.
-            if not len(data_var_dims) and var_name == self._scalar_unlimited:
-                data_var_dims = [self._scalar_unlimited]
-            array_dims = [self._create_tdb_dim(dim_name, coords) for dim_name in data_var_dims]
-            tdb_domain = tiledb.Domain(*array_dims)
-
-            # Get tdb attributes.
-            attr = tiledb.Attr(name=var_name, dtype=data_var.dtype)
-
-            # Create the URI for the array.
-            array_filename = self.array_path.construct_path(domain_name, var_name)
-            # Create an empty array.
-            schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False,
-                                        attrs=[attr], ctx=self.ctx)
-            tiledb.Array.create(array_filename, schema)
-
-    def _array_indices(self, shape, start_index):
-        """Set the array indices to write the array data into."""
-        return _array_indices(shape, start_index)
-
-    def _get_grid_mapping(self, data_var):
-        """
-        Get the data variable's grid mapping variable, encode it as a JSON string
-        for easy storage in the TileDB array's meta and return it for storage as
-        array metadata.
-
-        """
-        result = 'none'  # TileDB probably won't support `NoneType` in array meta.
-        try:
-            grid_mapping_name = data_var.getncattr("grid_mapping")
-        except AttributeError:
-            pass
-        else:
-            if grid_mapping_name is not None:
-                assert grid_mapping_name in self.data_model.grid_mapping
-                grid_mapping_var = self.data_model.variables[grid_mapping_name]
-                result = store_grid_mapping(grid_mapping_var)
-        return result
-
-    def populate_array(self, var_name, data_var, domain_name,
-                       start_index=None, write_meta=True):
-        """Write the contents of a netcdf data variable into a tiledb array."""
-        # Get the data variable and the URI of the array to write to.
-        var_name = data_var.name
-        array_filename = self.array_path.construct_path(domain_name, var_name)
-
-        # Write to the array.
-        scalar = var_name == self._scalar_unlimited
-        write_array(array_filename, data_var,
-                    start_index=start_index, scalar=scalar, ctx=self.ctx)
-        if write_meta:
-            with tiledb.open(array_filename, 'w', ctx=self.ctx) as A:
-                # Set tiledb metadata from data var ncattrs.
-                for ncattr in data_var.ncattrs():
-                    A.meta[ncattr] = data_var.getncattr(ncattr)
-                # Add metadata describing whether this is a coord or data var.
-                if var_name in self.data_model.data_var_names:
-                    # A data array gets a `dataset` key in the metadata dictionary,
-                    # which defines all the data variables in it.
-                    A.meta['dataset'] = var_name
-                    # Define this as not being a multi-attr array.
-                    A.meta['multiattr'] = False
-                    # Add grid mapping metadata as a JSON string.
-                    grid_mapping_string = self._get_grid_mapping(data_var)
-                    A.meta['grid_mapping'] = grid_mapping_string
-                    # XXX: can't add list or tuple as values to metadata dictionary...
-                    dim_coord_names = self._get_dim_coord_names(var_name)
-                    A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
-                elif var_name in self.data_model.dim_coord_names:
-                    # A dim coord gets a `coord` key in the metadata dictionary,
-                    # value being the name of the coordinate.
-                    A.meta['coord'] = self.data_model.dimensions[var_name].name
-                elif var_name == self._scalar_unlimited:
-                    # Handle scalar coords along the append axis.
-                    A.meta['coord'] = self._scalar_unlimited
-                else:
-                    # Don't know how to handle this. It might be an aux or scalar
-                    # coord, but we're not currently writing TDB arrays for them.
-                    pass
-
-    def populate_domain_arrays(self, domain_vars, domain_name):
-        """Populate all arrays with data from netcdf data vars within a tiledb group."""
-        for var_name in domain_vars:
-            data_var = self.data_model.variables[var_name]
-            self.populate_array(var_name, data_var, domain_name)
-
-    def create_domains(self):
-        """
-        We need to create one TDB group per data variable in the data model,
-        organised by domain.
-
-        """
-        for domain in self.data_model.domains:
-            # Get the data and coord variables in this domain.
-            domain_vars = self.data_model.domain_varname_mapping[domain]
-            # Defined for the sake of clarity (each `domain` is a list of its dim coords).
-            domain_coords = domain
-
-            # Create group.
-            domain_name = self._public_domain_name(domain)
-            group_dirname = self.array_path.construct_path(domain_name, '')
-            if self.array_filepath is not None:
-                # XXX TileDB does not automatically create group directories.
-                self._create_tdb_directory(group_dirname)
-            tiledb.group_create(group_dirname)
-
-            # Create and write arrays for each domain-describing coordinate.
-            self.create_domain_arrays(domain_coords, group_dirname, coords=True)
-            self.populate_domain_arrays(domain_coords, group_dirname)
-
-            # Get data vars in this domain and create an array for the domain.
-            self.create_domain_arrays(domain_vars, group_dirname)
-            # Populate this domain's array.
-            self.populate_domain_arrays(domain_vars, group_dirname)
-
-    def append(self, others, var_name, append_dim,
-              logfile=None, parallel=False, verbose=False):
-        """
-        Append extra data as described by the contents of `others` onto
-        an existing TileDB array along the axis defined by `append_dim`.
-
-        Notes:
-          * extends one dimension only
-          * cannot create new dimensions, only extend existing dimensions
-
-        TODO support multiple axis appends.
-        TODO check if there's already data at the write inds and add an overwrite?
-
-        """
-        if logfile is not None:
-            logging.basicConfig(filename=logfile,
-                                level=logging.DEBUG,
-                                format='%(asctime)s %(message)s',
-                                datefmt='%d/%m/%Y %H:%M:%S')
-
-        make_data_model = False
-        # Check what sort of thing `others` is.
-        if isinstance(others, NCDataModel):
-            others = [others]
-        elif isinstance(others, str):
-            others = [others]
-            make_data_model = True
-        else:
-            other = others[0]
-            if isinstance(other, str):
-                make_data_model = True
-
-        append_axis, append_dim = self._append_dimension(var_name, append_dim)
-
-        self_dim_var = self.data_model.variables[append_dim]
-        self_dim_points = copy.copy(self_dim_var[:])
-        self_dim_start, self_dim_stop, self_step = _dim_points(self_dim_points)
-        self_ind_start, self_ind_stop = _dim_inds(self_dim_points,
-                                                  [self_dim_start, self_dim_stop])
-
-        # Get domain for var_name and tiledb array path.
-        domain = self.data_model.varname_domain_mapping[var_name]
-        domain_name = self._public_domain_name(domain)
-        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
-
-        # For multidim / multi-attr appends this will be more complex.
-        common_job_args = [domain_path, var_name, append_axis, append_dim,
-                           self_ind_stop, self_dim_stop, self_step,
-                           make_data_model, verbose]
-        job_args = [[other] + common_job_args for other in others]
-
-        if parallel:
-            import dask.bag as db
-            bag_of_jobs = db.from_sequence(job_args)
-            bag_of_jobs.map(_make_tile_helper).compute()
-        else:
-            for i, args in enumerate(job_args):
-                args += [i, len(job_args)]
-                _make_tile_helper(args)
-
-        if len(others) > 10:
-            # Consolidate at the end of the append operations to make the resultant
-            # array more performant.
-            config = tiledb.Config({"sm.consolidation.steps": 1000})
-            ctx = tiledb.Ctx(config)
-            tiledb.consolidate(os.path.join(domain_path, var_name), ctx=ctx)
-
-    def fill_missing_points(self, append_dim_name, verbose=False):
-        # XXX duplicated from `append` method.
-        domain = self.data_model.varname_domain_mapping[append_dim_name]
-        domain_name = f'domain_{self.data_model.domains.index(domain)}'
-        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
-        coord_array_path = os.path.join(domain_path, append_dim_name)
-
-        self._fill_missing_points(coord_array_path, append_dim_name, verbose=verbose)
-
-
-class TileDBWriter(_TDBWriter):
+class TileDBWriter(Writer):
     """
     Write Python objects loaded from NetCDF to TileDB, including writing TileDB
     arrays with multiple data attributes from different NetCDF data variables
@@ -339,6 +62,8 @@ class TileDBWriter(_TDBWriter):
         super().__init__(data_model, array_filepath, container, array_name,
                          unlimited_dims, ctx)
 
+        if self.unlimited_dims is None:
+            self.unlimited_dims = []
         self.domain_separator = domain_separator
         self._domains_mapping = None
 
@@ -359,6 +84,17 @@ class TileDBWriter(_TDBWriter):
 
         """
         return separator.join(dimensions)
+
+    def _create_tdb_directory(self, group_dirname):
+        """
+        Create an on-filesystem directory for a tiledb group if it does
+        not exist, and ignore the error if it does.
+
+        """
+        try:
+            os.makedirs(group_dirname)
+        except FileExistsError:
+            pass
 
     def _get_attributes(self, data_var):
         ncattrs = data_var.ncattrs()
@@ -408,6 +144,113 @@ class TileDBWriter(_TDBWriter):
             domains_mapping[domain].append(data_var_name)
         self.domains_mapping = domains_mapping
 
+    def _create_tiledb_dim(self, dim_name, coords):
+        dim_coord = self.data_model.variables[dim_name]
+        chunks = self.data_model.get_chunks(dim_name)
+
+        # Handle scalar dimensions.
+        if dim_name == self._scalar_unlimited:
+            dim_coord_len = 1
+            chunks = (1,)
+        else:
+            # TODO: work out nD coords (although a DimCoord will never be nD).
+            dim_coord_len, = dim_coord.shape
+
+        # Set the tdb dimension dtype to `int64` regardless of input.
+        # Dimensions must have int indices for dense array schemas.
+        # All tdb dims in a domain must have exactly the same dtype.
+        dim_dtype = np.int64
+
+        # Sort out the domain, based on whether the dim is unlimited,
+        # or whether it was specified that it should be by `self.unlimited_dims`.
+        if dim_name in self.unlimited_dims:
+            domain_max = np.iinfo(dim_dtype).max - dim_coord_len
+        elif dim_name in self.data_model.unlimited_dim_coords:
+            domain_max = np.iinfo(dim_dtype).max - dim_coord_len
+        else:
+            domain_max = dim_coord_len
+
+        # Modify the name of the dimension if this dimension describes the domain
+        # for a dim coord array.
+        # Array attrs and dimensions must have different names.
+        if coords:
+            dim_name = f'{dim_name}_coord'
+
+        return tiledb.Dim(name=dim_name,
+                          domain=(0, domain_max),
+                          tile=chunks,
+                          dtype=dim_dtype)
+
+    def populate_array(self, data_var, domain_name,
+                       start_index=None, write_meta=True):
+        """Write the contents of a netcdf data variable into a tiledb array."""
+        # Get the data variable and the URI of the array to write to.
+        var_name = data_var.name
+        array_filename = self.array_path.construct_path(domain_name, var_name)
+
+        # Write to the array.
+        scalar = var_name == self._scalar_unlimited
+        write_array(array_filename, data_var,
+                    start_index=start_index, scalar=scalar, ctx=self.ctx)
+        if write_meta:
+            with tiledb.open(array_filename, 'w', ctx=self.ctx) as A:
+                # Set tiledb metadata from data var ncattrs.
+                for ncattr in data_var.ncattrs():
+                    A.meta[ncattr] = data_var.getncattr(ncattr)
+                # Add metadata describing whether this is a coord or data var.
+                if var_name in self.data_model.data_var_names:
+                    # A data array gets a `dataset` key in the metadata dictionary,
+                    # which defines all the data variables in it.
+                    A.meta['dataset'] = var_name
+                    # Define this as not being a multi-attr array.
+                    A.meta['multiattr'] = False
+                    # Add grid mapping metadata as a JSON string.
+                    grid_mapping_string = self._get_grid_mapping(data_var)
+                    A.meta['grid_mapping'] = grid_mapping_string
+                    # XXX: can't add list or tuple as values to metadata dictionary...
+                    dim_coord_names = self._get_dim_coord_names(var_name)
+                    A.meta['dimensions'] = ','.join(n for n in dim_coord_names)
+                elif var_name in self.data_model.dim_coord_names:
+                    # A dim coord gets a `coord` key in the metadata dictionary,
+                    # value being the name of the coordinate.
+                    A.meta['coord'] = self.data_model.dimensions[var_name].name
+                elif var_name == self._scalar_unlimited:
+                    # Handle scalar coords along the append axis.
+                    A.meta['coord'] = self._scalar_unlimited
+                else:
+                    # Don't know how to handle this. It might be an aux or scalar
+                    # coord, but we're not currently writing TDB arrays for them.
+                    pass
+
+    def populate_domain_arrays(self, domain_vars, domain_name):
+        """Populate all arrays with data from netcdf data vars within a tiledb group."""
+        for var_name in domain_vars:
+            data_var = self.data_model.variables[var_name]
+            self.populate_array(data_var, domain_name)
+
+    def create_domain_arrays(self, domain_vars, domain_name, coords=False):
+        """Create one single-attribute array per data var in this NC domain."""
+        for var_name in domain_vars:
+            # Set dims for the enclosing domain.
+
+            data_var = self.data_model.variables[var_name]
+            data_var_dims = data_var.dimensions
+            # Handle scalar append dimension coordinates.
+            if not len(data_var_dims) and var_name == self._scalar_unlimited:
+                data_var_dims = [self._scalar_unlimited]
+            array_dims = [self._create_tiledb_dim(dim_name, coords) for dim_name in data_var_dims]
+            tdb_domain = tiledb.Domain(*array_dims)
+
+            # Get tdb attributes.
+            attr = tiledb.Attr(name=var_name, dtype=data_var.dtype)
+
+            # Create the URI for the array.
+            array_filename = self.array_path.construct_path(domain_name, var_name)
+            # Create an empty array.
+            schema = tiledb.ArraySchema(domain=tdb_domain, sparse=False,
+                                        attrs=[attr], ctx=self.ctx)
+            tiledb.Array.create(array_filename, schema)
+
     def populate_multiattr_array(self, data_array_name, data_var_names, domain_name,
                                  start_index=None, write_meta=True):
         """Write the contents of multiple data variables into a multi-attr TileDB array."""
@@ -441,7 +284,7 @@ class TileDBWriter(_TDBWriter):
                                domain_name, data_array_name):
         """Create one multi-attr TileDB array with an attr for each data variable."""
         # Create dimensions and domain for the multi-attr array.
-        array_dims = [self._create_tdb_dim(dim_name, coords=False) for dim_name in domain_dims]
+        array_dims = [self._create_tiledb_dim(dim_name, coords=False) for dim_name in domain_dims]
         tdb_domain = tiledb.Domain(*array_dims)
 
         # Set up the multiple attrs for the array.
@@ -496,7 +339,7 @@ class TileDBWriter(_TDBWriter):
 
     def _get_scalar_offset(self, baseline, append_dim, self_dim_stop):
         """
-        Use the specified baseline file to calcuate the single offset between every
+        Use the specified baseline file to calculate the single offset between every
         successive step along the scalar append dimension.
 
         """
@@ -759,14 +602,9 @@ def _dim_offsets(dim_points, self_stop_ind, self_stop, self_step,
     return i_start
 
 
-def _progress_report(other_data_model, verbose, i, total):
+def _progress_report(fn, job_no, domain_no, n_jobs, n_domains):
     """A helpful printout of append progress."""
-    # XXX Not sure about this when called from a bag...
-    if verbose and i is not None and total is not None:
-        fn = other_data_model.netcdf_filename
-        ct = i + 1
-        pc = 100 * (ct / total)
-        print(f'Processing {fn}...  ({ct}/{total}, {pc:0.1f}%)', end="\r")
+    print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {domain_no+1}/{n_domains})', end="\r")
 
 
 def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
@@ -862,13 +700,15 @@ def _make_multiattr_tile_helper(serialized_job):
             other_data_model.populate()
 
         with other_data_model.open_netcdf():
-            for n, domain_path in enumerate(domain_paths):
+            for domain_no, domain_path in enumerate(domain_paths):
                 if job_args.verbose:
-                    fn = other_data_model.netcdf_filename
-                    job_no = job_args.job_number
-                    n_jobs = job_args.n_jobs
-                    n_domains = len(domain_paths)
-                    print(f'Processing {fn}...  ({job_no+1}/{n_jobs}, domain {n+1}/{n_domains})', end="\r")
+                    _progress_report(
+                        other_data_model.netcdf_filename,
+                        job_args.job_number,
+                        domain_no,
+                        job_args.n_jobs,
+                        len(domain_paths)
+                    )
 
                 if domain_path.endswith('/'):
                     _, domain_name = os.path.split(domain_path[:-1])
@@ -883,54 +723,3 @@ def _make_multiattr_tile_helper(serialized_job):
         logging.error(emsg, exc_info=True)
         if job_args.logfile is None and job_args.verbose:
             raise
-
-
-def _make_tile(other, domain_path, var_name, append_axis, append_dim,
-               self_ind_stop, self_dim_stop, self_step,
-               make_data_model, verbose, i=None, num=None):
-    """Process appending a single tile to `self`."""
-    if make_data_model:
-        other_data_model = NCDataModel(other)
-        other_data_model.classify_variables()
-        other_data_model.get_metadata()
-    else:
-        other_data_model = other
-
-    _progress_report(other_data_model, verbose, i, num)
-
-    other_data_var = other_data_model.variables[var_name]
-    other_dim_var = other_data_model.variables[append_dim]
-    other_dim_points = np.atleast_1d(other_dim_var[:])
-
-    # Check for the dataset being scalar on the append dimension.
-    scalar_coord = False
-    if len(other_dim_points) == 1:
-        scalar_coord = True
-
-    if scalar_coord:
-        shape = [1] + list(other_data_var.shape)
-    else:
-        shape = other_data_var.shape
-
-    offsets = []
-    try:
-        offset = _dim_offsets(
-            other_dim_points, self_ind_stop, self_dim_stop, self_step,
-            scalar=scalar_coord)
-        offsets = [0] * len(shape)
-        offsets[append_axis] = offset
-        offset_inds = _array_indices(shape, offsets)
-    except Exception as e:
-        logging.info(f'{other_data_model.netcdf_filename} - {e}')
-
-    # Append the data from other.
-    data_array_path = os.path.join(domain_path, var_name)
-    write_array(data_array_path, other_data_var, start_index=offset_inds)
-    # Append the extra dimension points from other.
-    dim_array_path = os.path.join(domain_path, append_dim)
-    write_array(dim_array_path, other_dim_var, start_index=offset_inds[append_axis])
-
-
-def _make_tile_helper(args):
-    """Helper method to call from a `map` operation and unpack the args."""
-    _make_tile(*args)
