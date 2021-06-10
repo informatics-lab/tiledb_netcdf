@@ -59,6 +59,25 @@ class Writer(object):
             dim_coord_names = (self._scalar_unlimited,) + dim_coord_names
         return dim_coord_names
 
+    def _get_grid_mapping(self, data_var):
+        """
+        Get the data variable's grid mapping variable, encode it as a JSON string
+        for easy storage in the TileDB array's meta and return it for storage as
+        array metadata.
+
+        """
+        result = 'none'  # TileDB probably won't support `NoneType` in array meta.
+        try:
+            grid_mapping_name = data_var.getncattr("grid_mapping")
+        except AttributeError:
+            pass
+        else:
+            if grid_mapping_name is not None:
+                assert grid_mapping_name in self.data_model.grid_mapping
+                grid_mapping_var = self.data_model.variables[grid_mapping_name]
+                result = store_grid_mapping(grid_mapping_var)
+        return result
+
     def _append_checker(self, other_data_model, var_name, append_dim):
         """Checks to see if an append operation can go ahead."""
         # Sanity checks: is the var name in both self, other, and the tiledb?
@@ -129,3 +148,16 @@ class Writer(object):
         else:
             if verbose:
                 print(f'No missing points in {coord_array_name!r}, nothing to do.')
+
+    def fill_missing_points(self, append_dim_name, verbose=False):
+        """
+        Use a linear interpolator to fill missing points along the append dimension
+        with appropriate values.
+
+        """
+        domain = self.data_model.varname_domain_mapping[append_dim_name]
+        domain_name = f'domain_{self.data_model.domains.index(domain)}'
+        domain_path = os.path.join(self.array_filepath, self.array_name, domain_name)
+        coord_array_path = os.path.join(domain_path, append_dim_name)
+
+        self._fill_missing_points(coord_array_path, append_dim_name, verbose=verbose)
