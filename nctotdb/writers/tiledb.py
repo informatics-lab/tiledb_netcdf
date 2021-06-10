@@ -549,8 +549,9 @@ class TileDBWriter(_TDBWriter):
         base_dim_points = copy.copy(np.array(base_dim_var[:], ndmin=1))
         scalar_like_dims = self.data_model.length_1_dims + [self._scalar_unlimited]
         if append_dim_name in scalar_like_dims:
-            if baseline is None:
-                raise ValueError('Cannot determine scalar step without a baseline dataset.')
+            if baseline is None and override_offset is None:
+                emsg = 'Cannot determine scalar step without a baseline dataset or defined offset.'
+                raise ValueError(emsg)
             base_ind_stop = 0
             base_dim_stop = base_dim_points[0]
             dim_step = self._get_scalar_offset(baseline, append_dim_name, base_dim_stop)
