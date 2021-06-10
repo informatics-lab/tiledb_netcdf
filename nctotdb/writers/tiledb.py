@@ -554,7 +554,10 @@ class TileDBWriter(_TDBWriter):
                 raise ValueError(emsg)
             base_ind_stop = 0
             base_dim_stop = base_dim_points[0]
-            dim_step = self._get_scalar_offset(baseline, append_dim_name, base_dim_stop)
+            if override_offset is not None:
+                dim_step = override_offset
+            else:
+                dim_step = self._get_scalar_offset(baseline, append_dim_name, base_dim_stop)
             scalar = append_dim_name not in self.data_model.length_1_dims
         else:
             base_dim_start, base_dim_stop, dim_step = _dim_points(base_dim_points)
