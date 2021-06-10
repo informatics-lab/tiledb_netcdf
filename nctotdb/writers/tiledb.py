@@ -547,13 +547,18 @@ class TileDBWriter(_TDBWriter):
         # Get starting dimension points and offsets.
         base_dim_var = self.data_model.variables[append_dim_name]
         base_dim_points = copy.copy(np.array(base_dim_var[:], ndmin=1))
-        if append_dim_name == self._scalar_unlimited:
-            if baseline is None:
-                raise ValueError('Cannot determine scalar step without a baseline dataset.')
+        scalar_like_dims = self.data_model.length_1_dims + [self._scalar_unlimited]
+        if append_dim_name in scalar_like_dims:
+            if baseline is None and override_offset is None:
+                emsg = 'Cannot determine scalar step without a baseline dataset or defined offset.'
+                raise ValueError(emsg)
             base_ind_stop = 0
             base_dim_stop = base_dim_points[0]
-            dim_step = self._get_scalar_offset(baseline, append_dim_name, base_dim_stop)
-            scalar = True
+            if override_offset is not None:
+                dim_step = override_offset
+            else:
+                dim_step = self._get_scalar_offset(baseline, append_dim_name, base_dim_stop)
+            scalar = append_dim_name not in self.data_model.length_1_dims
         else:
             base_dim_start, base_dim_stop, dim_step = _dim_points(base_dim_points)
             _, base_ind_stop = _dim_inds(base_dim_points, [base_dim_start, base_dim_stop])
@@ -781,7 +786,7 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         raise KeyError(emsg.format(', '.join(other_data_model.data_var_names)))
 
     zeroth_data_var = list(other_data_vars.keys())[0]
-    data_var_shape  = other_data_vars[zeroth_data_var].shape
+    data_var_shape = other_data_vars[zeroth_data_var].shape
 
     offsets = []
     append_axes = domain_axes[domain_path]
@@ -791,10 +796,15 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         append_axis = append_axes.index(append_dim)
 
         # Check for the dataset being scalar on the append dimension.
-        if not scalar_coord and len(other_dim_points) == 1:
+        if append_dim in other_data_model.length_1_dims:
             scalar_coord = True
-
-        shape = [1] + list(data_var_shape) if scalar_coord else data_var_shape
+            shape = data_var_shape
+        elif len(other_dim_points) == 1:
+            scalar_coord = True
+            shape = [1] + list(data_var_shape)
+        else:
+            scalar_coord = False
+            shape = data_var_shape
 
         offset = _dim_offsets(
             other_dim_points, ind_stop, dim_stop, step,
