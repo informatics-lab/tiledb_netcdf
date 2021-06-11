@@ -488,16 +488,37 @@ class TileDBWriter(Writer):
         if consolidate and (n_jobs > 10):
             self._run_consolidate(domain_names, data_array_name, verbose=verbose)
 
-    def fill_missing_points(self, append_dim_name, verbose=False):
-        # Check all domains for including the append dimension.
-        coord_array_paths = []
-        for domain_name in self.domains_mapping.keys():
-            if append_dim_name in domain_name.split(self.domain_separator):
-                coord_array_path = self.array_path.construct_path(domain_name,
-                                                                  append_dim_name)
-                self._fill_missing_points(coord_array_path,
-                                          append_dim_name,
-                                          verbose=verbose)
+    def fill_missing_points(self, fill_dims, verbose=False):
+        """
+        Fill missing points in an append dimension. Missing points can occur if
+        an append item is skipped or missing, but missing points trip up the Iris
+        reader, as Iris expects monotonic dimension coordinates. The solution is
+        to fill missing point values with the values that otherwise should be there.
+
+        Specify dims to be filled as a single dimension name (e.g. `time`),
+        a list of dimensions to be filled (e.g. `['time', 'height']`), or
+        a dictionary of {'dimension_name': constant_offset_value} (e.g. `{'time': 1}`).
+
+        .. note::
+            Only fills coordinate point values, not missing values in data variables!
+
+        """
+        # Sort types out.
+        if isinstance(fill_dims, str):
+            fill_dims = [fill_dims]
+        if not isinstance(fill_dims, dict):
+            fill_dims = {k: None for k in fill_dims}
+
+        # Check all domains for including the append dimensions.
+        for append_dim_name, offset_value in fill_dims.items():
+            for domain_name in self.domains_mapping.keys():
+                if append_dim_name in domain_name.split(self.domain_separator):
+                    coord_array_path = self.array_path.construct_path(domain_name,
+                                                                      append_dim_name)
+                    self._fill_missing_points(coord_array_path,
+                                              append_dim_name,
+                                              numeric_step=offset_value,
+                                              verbose=verbose)
 
 # #####
 # Static helper functions.
