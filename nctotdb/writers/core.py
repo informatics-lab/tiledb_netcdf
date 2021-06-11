@@ -111,7 +111,8 @@ class Writer(object):
             append_dim = self.data_model.dimensions[append_axis]
         return append_axis, append_dim
 
-    def _fill_missing_points(self, coord_array_path, coord_array_name, verbose=False):
+    def _fill_missing_points(self, coord_array_path, coord_array_name,
+                             numeric_step=None, verbose=False):
         """
         If one or more indices along the append axis are missing spatial points, we
         end up with `NaN`s in the resultant coordinate array. This prevents loading
@@ -124,17 +125,18 @@ class Writer(object):
         """
         with tiledb.open(coord_array_path, 'r', ctx=self.ctx) as D:
             ned = D.nonempty_domain()[0]
-            coord_points = D[ned[0]:ned[1]][coord_array_name]
+            coord_points = D[ned[0]:ned[1]+1][coord_array_name]
 
-        missing_points, = np.nonzero(np.isnan(coord_points))
+        missing_points, = np.nonzero(coord_points == np.iinfo(np.int64).min)
         if len(missing_points):
             if verbose:
                 print(f'{len(missing_points)} points to fill in {coord_array_name!r}.')
 
             ind_points = np.arange(len(coord_points))
-            coord_steps = np.unique(np.diff(coord_points))
-            # Expects only a single non-NaN step (i.e. monotonicity).
-            numeric_step, = coord_steps[np.nonzero(~np.isnan(coord_steps))]
+            if numeric_step is None:
+                coord_steps = np.unique(np.diff(coord_points))
+                # Expects only a single non-NaN step (i.e. monotonicity).
+                numeric_step, = coord_steps[np.nonzero(~np.isnan(coord_steps))]
 
             # Interpolate to fill the missing points.
             vec_interp = np.vectorize(utils.fillnan)
@@ -144,7 +146,7 @@ class Writer(object):
 
             # Write the whole filled array back to the TileDB coord array.
             with tiledb.open(coord_array_path, 'w', ctx=self.ctx) as D:
-                D[ned[0]:ned[1]] = coord_points
+                D[ned[0]:ned[1]+1] = coord_points
         else:
             if verbose:
                 print(f'No missing points in {coord_array_name!r}, nothing to do.')

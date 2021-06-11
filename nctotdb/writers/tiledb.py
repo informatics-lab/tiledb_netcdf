@@ -163,9 +163,7 @@ class TileDBWriter(Writer):
 
         # Sort out the domain, based on whether the dim is unlimited,
         # or whether it was specified that it should be by `self.unlimited_dims`.
-        if dim_name in self.unlimited_dims:
-            domain_max = np.iinfo(dim_dtype).max - dim_coord_len
-        elif dim_name in self.data_model.unlimited_dim_coords:
+        if dim_name in self.unlimited_dims or dim_name in self.data_model.unlimited_dim_coords:
             domain_max = np.iinfo(dim_dtype).max - dim_coord_len
         else:
             domain_max = dim_coord_len
@@ -490,16 +488,37 @@ class TileDBWriter(Writer):
         if consolidate and (n_jobs > 10):
             self._run_consolidate(domain_names, data_array_name, verbose=verbose)
 
-    def fill_missing_points(self, append_dim_name, verbose=False):
-        # Check all domains for including the append dimension.
-        coord_array_paths = []
-        for domain_name in self.domains_mapping.keys():
-            if append_dim_name in domain_name.split(self.domain_separator):
-                coord_array_path = self.array_path.construct_path(domain_name,
-                                                                  append_dim_name)
-                self._fill_missing_points(coord_array_path,
-                                          append_dim_name,
-                                          verbose=verbose)
+    def fill_missing_points(self, fill_dims, verbose=False):
+        """
+        Fill missing points in an append dimension. Missing points can occur if
+        an append item is skipped or missing, but missing points trip up the Iris
+        reader, as Iris expects monotonic dimension coordinates. The solution is
+        to fill missing point values with the values that otherwise should be there.
+
+        Specify dims to be filled as a single dimension name (e.g. `time`),
+        a list of dimensions to be filled (e.g. `['time', 'height']`), or
+        a dictionary of {'dimension_name': constant_offset_value} (e.g. `{'time': 1}`).
+
+        .. note::
+            Only fills coordinate point values, not missing values in data variables!
+
+        """
+        # Sort types out.
+        if isinstance(fill_dims, str):
+            fill_dims = [fill_dims]
+        if not isinstance(fill_dims, dict):
+            fill_dims = {k: None for k in fill_dims}
+
+        # Check all domains for including the append dimensions.
+        for append_dim_name, offset_value in fill_dims.items():
+            for domain_name in self.domains_mapping.keys():
+                if append_dim_name in domain_name.split(self.domain_separator):
+                    coord_array_path = self.array_path.construct_path(domain_name,
+                                                                      append_dim_name)
+                    self._fill_missing_points(coord_array_path,
+                                              append_dim_name,
+                                              numeric_step=offset_value,
+                                              verbose=verbose)
 
 # #####
 # Static helper functions.
@@ -624,9 +643,11 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         raise KeyError(emsg.format(', '.join(other_data_model.data_var_names)))
 
     zeroth_data_var = list(other_data_vars.keys())[0]
-    data_var_shape = other_data_vars[zeroth_data_var].shape
+    shape = list(other_data_vars[zeroth_data_var].shape)
 
-    offsets = []
+    scalar_shape = 1
+    scalar_axes = []
+    dim_offsets = []
     append_axes = domain_axes[domain_path]
     for append_dim, (ind_stop, dim_stop, step, scalar_coord) in append_offsets.items():
         other_dim_var = other_data_model.variables[append_dim]
@@ -636,19 +657,23 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
         # Check for the dataset being scalar on the append dimension.
         if append_dim in other_data_model.length_1_dims:
             scalar_coord = True
-            shape = data_var_shape
         elif len(other_dim_points) == 1:
             scalar_coord = True
-            shape = [1] + list(data_var_shape)
+            scalar_axes.append(append_axis)
         else:
             scalar_coord = False
-            shape = data_var_shape
 
         offset = _dim_offsets(
             other_dim_points, ind_stop, dim_stop, step,
             scalar=scalar_coord)
-        offsets = [0] * len(shape)
-        offsets[append_axis] = offset
+        dim_offsets.append([append_axis, offset])
+
+    # Sort out data shape and offsets for nD data var.
+    for axis in scalar_axes:
+        shape.insert(axis, scalar_shape)
+    offsets = [0] * len(shape)
+    for (axis, offset) in dim_offsets:
+        offsets[axis] = offset
     offset_inds = _array_indices(shape, offsets)
 
     domain_name = domain_path.split('/')[-1]
@@ -659,10 +684,15 @@ def _make_multiattr_tile(other_data_model, domain_path, data_array_name,
     data_array_path = f"{domain_path}{data_array_name}"
     write_multiattr_array(data_array_path, other_data_vars,
                           start_index=offset_inds, ctx=ctx)
-    # Append the extra dimension points from other.
-    dim_array_path = f"{domain_path}{append_dim}"
-    write_array(dim_array_path, other_dim_var,
-                start_index=offset_inds[append_axis], ctx=ctx)
+
+    # Append extra dimension points from all append dims in other.
+    for append_dim in append_offsets.keys():
+        dim_array_path = f"{domain_path}{append_dim}"
+        other_dim_var = other_data_model.variables[append_dim]
+        append_axis = append_axes.index(append_dim)
+        scalar_dim = append_axis in scalar_axes
+        write_array(dim_array_path, other_dim_var, scalar=scalar_dim,
+                    start_index=offset_inds[append_axis], ctx=ctx)
 
 
 def _make_multiattr_tile_helper(serialized_job):

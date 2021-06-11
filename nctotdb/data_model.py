@@ -346,7 +346,7 @@ class NCDataModelGroup(object):
     Combine multiple data model instances (each with only a single data variable)
     into an amalgam data model containing multiple data variables.
 
-    It is assumed (but not currently programatically confirmed) that all data
+    It is assumed (but not currently programmatically confirmed) that all data
     model instances are otherwise identical (that is, all other metadata matches),
     and only the data variable changes between instances. Failure to heed this
     limitation will likely lead to broken TileDB / Zarr arrays.
